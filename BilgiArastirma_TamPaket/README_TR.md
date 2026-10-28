@@ -5,6 +5,8 @@
 - Kaynakları `documents/` klasörüne kopyalar; metinlerini SQLite'a kaydeder.
 - PDF sayfa numarası, Word paragraf/tablo konumu, TXT satır numarası ve görsel adıyla sonuç gösterir.
 - Türkçe karakter duyarlı/duyarsız arama seçeneği, tam ifade araması ve tüm kelimeler/eşleşen kelimeler modu. Duyarsız modda ç/ğ/ı/ö/ş/ü ve i/İ/I/ı eşitlenir; duyarlı modda Türkçe harfler aynen aranır.
+- Genişletilmiş arama girdisi: elle yazmanın yanında bir dökümandan (PDF/DOCX/TXT) paragraf seçme, resimden OCR ile metin çıkarma, ekran görüntüsü alma (tam ekran veya seçilen bölge) ve web adresinden sayfa metni alma.
+- Web sayfası ve ekrandan/resimden gelen metin istenirse doğrudan kaynak olarak arşive eklenebilir; arama sonucunda `Kaynak dosyayı aç` web adresini tarayıcıda açar.
 - Kaynak sonuçlarına not ekleme, önceki aramaları tekrar açma.
 - Kaynak dosyayı açma; bulunan tüm sonuçları tek raporda PDF, Word (DOCX), TXT veya CSV olarak dışa aktarma. PDF ve Word raporları varsa ekrandaki yapay zekâ konu notunu ve kaynak sonuçlarını birlikte içerir.
 - Dört araştırma modu: Otomatik, Çıkmış soru, Paragraf/metin ve Kavram.
@@ -29,6 +31,18 @@ python app.py
 ```
 
 İlk çalıştırmada `.venv` yoksa `Kurulum.bat` dosyasını çalıştırabilirsiniz. İnternet bağlantısı yalnızca Python paketlerini kurmak için gerekir.
+
+## Arama girdisini hazırlama
+Arama kutusuna elle yazabilirsiniz (çok satırlı; `Ctrl+Enter` ile arar). Yanındaki `Girdi kaynağı…` düğmesi şu seçenekleri sunar:
+
+| Sekme | Ne yapar |
+|---|---|
+| Dökümandan paragraf | PDF, DOCX veya TXT açar; bölümleri listeler; seçtiğiniz paragrafı arama kutusuna aktarır veya arşive ekler |
+| Resim (OCR) | PNG/JPG/BMP/TIFF seçer; Tesseract ile metni çıkarır |
+| Ekran görüntüsü | Tüm ekranı ya da fareyle seçtiğiniz bölgeyi yakalayıp OCR ile metne çevirir |
+| Web adresi | `http://`/`https://` adresindeki sayfa metnini indirir; isterseniz kaynak olarak arşive ekler |
+
+OCR ve indirme işlemleri arka planda çalışır; pencere donmaz. Web'den veya ekrandan gelen metni arşive eklerseniz, arama sonuçlarında `Kaynak dosyayı aç` ilgili adresi tarayıcıda açar.
 
 ## OCR kurulumu
 Tesseract OCR'ı ayrıca Windows'a kurun. Yaygın yol:

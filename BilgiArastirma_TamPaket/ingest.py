@@ -92,3 +92,54 @@ def add_file(source_path, tesseract_path="", ocr_lang="tur+eng"):
         doc_id = cur.lastrowid
         add_chunks(con, doc_id, extracted)
     return doc_id, f"Arşive eklendi; {len(extracted)} metin bölümü çıkarıldı."
+
+
+def _store_text(name, file_type, source_text, origin, digest):
+    """Metni arşive yazar ve indeksler.
+
+    `stored_path` her zaman yerel `.txt` kopyasını tutar; `source_url` ise
+    metnin alındığı adresi (varsa) saklar. Böylece kaynak silinebilir ve
+    `Kaynak dosyayı aç` orijinal adresi açabilir.
+    """
+    dest = DOC_DIR / f"{digest[:12]}_{safe_name(name)}.txt"
+    if not dest.exists():
+        dest.write_text(source_text, encoding="utf-8")
+    lines = [(f"Satır {i}", line.strip()) for i, line in enumerate(source_text.splitlines(), 1) if line.strip()]
+    if not lines:
+        lines = [("Metin", source_text.strip() or "(boş)")]
+    with db() as con:
+        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status, source_url)
+            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?)""",
+            (name, str(dest), file_type, digest, len(source_text),
+             "Metin çıkarıldı" if source_text.strip() else "Metin bulunamadı", origin or ""))
+        doc_id = cur.lastrowid
+        add_chunks(con, doc_id, lines)
+    return doc_id, f"Arşive eklendi; {len(lines)} metin bölümü çıkarıldı."
+
+
+def add_url(url, timeout=None):
+    """Bir web adresinin metnini indirip arşive kaynak olarak ekler."""
+    from text_sources import fetch_url_text
+    text = fetch_url_text(url) if timeout is None else fetch_url_text(url, timeout=timeout)
+    if not text.strip():
+        raise ValueError("Sayfada okunabilir metin bulunamadı.")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with db() as con:
+        old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
+        if old:
+            return old["id"], "Bu sayfa daha önce eklenmiş; mevcut kayıt kullanıldı."
+    clean = url.strip()
+    name = re.sub(r"^https?://", "", clean).split("?")[0][:80] or "web_sayfasi"
+    return _store_text(name, "web", text, clean, digest)
+
+
+def add_text(text, name="Serbest metin"):
+    """Kullanıcının yapıştırdığı/ekrandan gelen metni arşive ekler."""
+    if not text or not text.strip():
+        raise ValueError("Eklenecek metin boş.")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with db() as con:
+        old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
+        if old:
+            return old["id"], "Bu metin daha önce eklenmiş; mevcut kayıt kullanıldı."
+    return _store_text(name, "text", text, "", digest)

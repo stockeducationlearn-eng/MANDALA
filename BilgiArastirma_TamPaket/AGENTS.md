@@ -24,6 +24,7 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - `database.py`: bağlantı yönetimi (`db()` context manager), şema, FTS5 indeksi.
 - `ingest.py`: dosya alma, SHA-256 dedup, PDF/DOCX/TXT/görsel metin çıkarımı + OCR.
 - `search_engine.py`: FTS5 + geri dönüş taraması, puanlama.
+- `text_sources.py`: dökümandan paragraf listeleme, resim/ekran OCR, web sayfası metni.
 - `ai_helper.py`: Ollama prompt/istek.
 - `exporter.py`: TXT/DOCX/PDF/CSV rapor + ZIP yedek.
 
@@ -39,6 +40,13 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **Arama:** `search(..., ignore_turkish_case=...)`; duyarsız mod FTS5 kullanır,
   duyarlı mod Python taramasına düşer. FTS5 yoksa otomatik geri dönüş vardır.
 - **Arama sorguları:** Türkçe ekler için önek (`"terim"*`) kullanılır.
+- **Metin kaynakları:** `text_sources.py` dış ağa yalnızca `requests` ile çıkar; dosya
+  yazmaz. Web getirme `http`/`https` dışını reddeder ve yanıt boyutunu sınırlar.
+  `app.py` içindeki `InputSourceDialog` ağır işleri (OCR, indirme) arka plan iş
+  parçacığında yapar ve sonucu `after()` ile ana iş parçacığına taşır; Tk çağrılarını
+  asla iş parçacığından yapmayın.
+- **Web kaynakları:** `documents.stored_path` bir URL de olabilir (`file_type='web'`).
+  Yolu dosya varsayarak kullanan her kod, URL durumunu ele almalı (bkz. `open_source`).
 
 ## Notlar
 - `fonts/DejaVuSans.ttf` repoya gömülüdür; PDF raporlarında Türkçe karakterler

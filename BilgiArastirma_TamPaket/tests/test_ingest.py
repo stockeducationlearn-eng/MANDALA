@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-import ingest
 
 
 def test_extract_txt_splits_lines(ingest_dir, tmp_path):
@@ -76,3 +75,40 @@ def test_delete_document_removes_fts_rows(temp_db, ingest_dir, tmp_path):
         fts = con.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
     assert stored
     assert fts == 0
+
+
+def test_add_url_archives_and_indexes(temp_db, ingest_dir, web_server):
+    url = web_server + "/sayfa"
+    doc_id, msg = ingest_dir.add_url(url)
+    assert "eklendi" in msg
+    with temp_db.db() as con:
+        row = con.execute("SELECT name, stored_path, file_type, source_url FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert row["file_type"] == "web"
+    # stored_path yerel kopya (silinebilir), source_url ise orijinal adres.
+    assert row["source_url"] == url
+    assert row["stored_path"].endswith(".txt")
+    assert Path(row["stored_path"]).exists()
+    from search_engine import search
+    _, results = search("tazminat")
+    assert any("tazminatı" in r["text"] for r in results)
+    assert results[0]["source_url"] == url
+
+
+def test_add_url_dedupes_same_page(temp_db, ingest_dir, web_server):
+    first, _ = ingest_dir.add_url(web_server + "/sayfa")
+    second, msg = ingest_dir.add_url(web_server + "/sayfa")
+    assert first == second
+    assert "daha önce" in msg
+
+
+def test_add_text_archives_user_input(temp_db, ingest_dir):
+    doc_id, msg = ingest_dir.add_text("İşçi kıdem tazminatı alır.", name="Not")
+    assert "eklendi" in msg
+    with temp_db.db() as con:
+        row = con.execute("SELECT file_type FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert row["file_type"] == "text"
+
+
+def test_add_text_rejects_empty(temp_db, ingest_dir):
+    with pytest.raises(ValueError):
+        ingest_dir.add_text("   ")

@@ -27,7 +27,7 @@ def _match_expression(terms, all_terms):
 def _fts_candidates(con, terms, all_terms, candidate_limit):
     return con.execute("""
         SELECT c.id AS chunk_id, c.document_id, c.location, c.text,
-               d.name AS document_name, d.stored_path
+               d.name AS document_name, d.stored_path, d.source_url
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.rowid
         JOIN documents d ON d.id = c.document_id
@@ -40,7 +40,7 @@ def _fts_candidates(con, terms, all_terms, candidate_limit):
 def _scan_candidates(con, terms, all_terms, ignore_turkish_case):
     rows = con.execute("""
         SELECT c.id AS chunk_id, c.document_id, c.location, c.text,
-               d.name AS document_name, d.stored_path
+               d.name AS document_name, d.stored_path, d.source_url
         FROM chunks c JOIN documents d ON d.id=c.document_id
     """).fetchall()
     out = []
@@ -86,7 +86,7 @@ def search(query, limit=150, all_terms=False, ignore_turkish_case=True, use_fts=
                         [(search_id, r["chunk_id"], score) for score, r in scored])
     return search_id, [
         {"search_id": search_id, "chunk_id": r["chunk_id"], "document_id": r["document_id"],
-         "document_name": r["document_name"], "stored_path": r["stored_path"],
+         "document_name": r["document_name"], "stored_path": r["stored_path"], "source_url": r["source_url"],
          "location": r["location"], "text": r["text"], "score": score, "note": ""}
         for score, r in scored
     ]
