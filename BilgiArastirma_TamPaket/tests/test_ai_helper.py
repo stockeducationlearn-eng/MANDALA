@@ -18,6 +18,9 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
     status = 200
     tags = []
     request_count = 0
+    last_body = {}
+    reject_json_format = False
+    sequence = []
 
     def _json(self, obj):
         return json.dumps(obj).encode("utf-8")
@@ -35,11 +38,19 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))  # gövdeyi tüket
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        type(self).last_body = json.loads(body or b"{}")
         type(self).request_count += 1
         if self.path != "/api/generate":
             self.send_response(404)
             self.end_headers()
+            return
+        if type(self).reject_json_format and type(self).last_body.get("format"):
+            raw = b'{"error": "invalid format"}'
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
             return
         if type(self).status != 200:
             raw = b"model not found"
@@ -56,8 +67,12 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write((line + "\n").encode("utf-8"))
                 self.wfile.flush()
             return
-        for i, chunk in enumerate(type(self).chunks):
-            if type(self).delay and i == len(type(self).chunks) - 1:
+        chunks = type(self).chunks
+        seq = type(self).sequence
+        if seq:
+            chunks = [seq.pop(0) if len(seq) > 1 else seq[0]]
+        for i, chunk in enumerate(chunks):
+            if type(self).delay and i == len(chunks) - 1:
                 time.sleep(type(self).delay)  # son parçayı geciktir -> okuma zaman aşımı
             self.wfile.write((json.dumps({"response": chunk, "done": False}) + "\n").encode("utf-8"))
             self.wfile.flush()
@@ -76,6 +91,8 @@ def fake_ollama():
     _OllamaHandler.chunks, _OllamaHandler.delay = ["{}"], 0.0
     _OllamaHandler.raw_lines = []
     _OllamaHandler.status, _OllamaHandler.tags = 200, []
+    _OllamaHandler.reject_json_format = False
+    _OllamaHandler.sequence = []
     _OllamaHandler.request_count = 0
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _OllamaHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -87,16 +104,19 @@ def fake_ollama():
             """Yanıtı tek parça olarak ayarlar (JSON ayrıştırma testleri için)."""
             _OllamaHandler.chunks = [text]
             _OllamaHandler.raw_lines = []
+            _OllamaHandler.sequence = []
 
         def set_stream(self, chunks, delay=0.0):
             """Yanıtı birden çok akış parçası olarak ayarlar."""
             _OllamaHandler.chunks = list(chunks)
             _OllamaHandler.raw_lines = []
+            _OllamaHandler.sequence = []
             _OllamaHandler.delay = delay
 
         def set_raw_lines(self, lines):
             """Ham NDJSON satırları yazar (sunucu taraflı hata testi için)."""
             _OllamaHandler.raw_lines = list(lines)
+            _OllamaHandler.sequence = []
             _OllamaHandler.delay = 0.0
 
         def set_status(self, code):
@@ -105,8 +125,19 @@ def fake_ollama():
         def set_tags(self, names):
             _OllamaHandler.tags = list(names)
 
+        def reject_format(self):
+            """Eski Ollama gibi davran: format alanını 400 ile reddet."""
+            _OllamaHandler.reject_json_format = True
+
+        def set_sequence(self, responses):
+            """Sırayla farklı yanıtlar döndür (son yanıt tekrarlanır)."""
+            _OllamaHandler.sequence = list(responses)
+
         def request_count(self):
             return _OllamaHandler.request_count
+
+        def last_payload(self):
+            return _OllamaHandler.last_body
 
     control = Control()
     yield control
@@ -150,11 +181,22 @@ def test_rank_by_relevance_clamps_out_of_range_scores(fake_ollama):
     assert ranked[1]["ai_score"] == 0.0
 
 
-def test_rank_by_relevance_raises_on_unparsable(fake_ollama):
+def test_score_batch_raises_on_unparsable(fake_ollama):
+    """Tek parti düzeyinde çözümlenemeyen yanıt hata olarak bildirilir."""
     fake_ollama.set_response("JSON yok")
     with pytest.raises(ai_helper.OllamaError):
-        ai_helper.rank_by_relevance("s", [{"document_name": "a", "location": "1", "text": "x"}],
-                                    model="test", host=fake_ollama.host)
+        ai_helper._score_batch("s", [{"document_name": "a", "location": "1", "text": "x"}],
+                               "test", fake_ollama.host, 300, "30m")
+
+
+def test_rank_by_relevance_degrades_instead_of_raising(fake_ollama):
+    """Arama düzeyinde bozuk yanıt istisna değil, puansız sonuç üretir."""
+    fake_ollama.set_response("JSON yok")
+    ranked = ai_helper.rank_by_relevance(
+        "s", [{"document_name": "a", "location": "1", "text": "x"}],
+        model="test", host=fake_ollama.host)
+    assert len(ranked) == 1
+    assert ranked[0]["ai_score"] is None
 
 
 def test_rank_by_relevance_empty_results_short_circuits(fake_ollama):
@@ -253,3 +295,135 @@ def test_check_ollama_reports_unreachable_server(fake_ollama):
     status = ai_helper.check_ollama(model="x", host=f"http://127.0.0.1:{dead}")
     assert not status["ok"]
     assert "ulaşılamadı" in status["message"]
+
+
+# --- JSON ayrıştırma sağlamlığı ------------------------------------------
+# Şikâyet: küçük modeller geçerli JSON döndürmediği için "JSON olarak
+# çözümlenemedi" hatası alınıyordu. Aşağıdaki biçimlerin tümü kabul edilmeli.
+
+@pytest.mark.parametrize("raw", [
+    '{"puanlar": {"0": 7, "1": 2}}',
+    '```json\n{"puanlar": {"0": 7, "1": 2}}\n```',
+    '```\n{"puanlar": {"0": 7, "1": 2}}\n```',
+    'Elbette! {"puanlar": {"0": 7, "1": 2}} Umarım yardımcı olur.',
+    "İşte sonuç:\n{'puanlar': {'0': 7, '1': 2}}\n",
+    '{"puanlar": {"0": 7, "1": 2,}}',
+    'Asagidaki {soru} icin: {"puanlar": {"0": 7, "1": 2}}',
+    '{"puanlar": {"0": 7, "1": 2',
+])
+def test_score_parsing_survives_common_model_outputs(fake_ollama, raw):
+    fake_ollama.set_response(raw)
+    ranked = ai_helper.rank_by_relevance(
+        "s", [{"document_name": "a", "location": "1", "text": "x"},
+              {"document_name": "b", "location": "2", "text": "y"}],
+        model="test", host=fake_ollama.host)
+    assert [r["ai_score"] for r in ranked] == [7.0, 2.0]
+
+
+def test_score_parsing_accepts_list_form(fake_ollama):
+    """Model sözlük yerine liste döndürürse de çalışmalı."""
+    fake_ollama.set_response('{"puanlar": [7, 2]}')
+    ranked = ai_helper.rank_by_relevance(
+        "s", [{"document_name": "a", "location": "1", "text": "x"},
+              {"document_name": "b", "location": "2", "text": "y"}],
+        model="test", host=fake_ollama.host)
+    assert [r["ai_score"] for r in ranked] == [7.0, 2.0]
+
+
+def test_score_parsing_keeps_apostrophe_in_content(fake_ollama):
+    """Tek tırnak onarımı metin içi kesme işaretini bozmamalı."""
+    fake_ollama.set_response('{"puanlar": {"0": 5, "1": 3}}')
+    ranked = ai_helper.rank_by_relevance(
+        "s", [{"document_name": "İşçi'nin", "location": "1", "text": "x"},
+              {"document_name": "b", "location": "2", "text": "y"}],
+        model="test", host=fake_ollama.host)
+    assert [r["ai_score"] for r in ranked] == [5.0, 3.0]
+
+
+def test_expand_query_survives_markdown_and_prose(fake_ollama):
+    fake_ollama.set_response(
+        'Tabii:\n```json\n{"konu": "kıdem", "kavramlar": ["kıdem tazminatı", "hak"]}\n```')
+    result = ai_helper.expand_query("soru", model="test", host=fake_ollama.host)
+    assert result["konu"] == "kıdem"
+    assert result["kavramlar"] == ["kıdem tazminatı", "hak"]
+
+
+def test_expand_query_accepts_single_string_concept(fake_ollama):
+    fake_ollama.set_response('{"konu": "x", "kavramlar": "kıdem tazminatı"}')
+    result = ai_helper.expand_query("soru", model="test", host=fake_ollama.host)
+    assert result["kavramlar"] == ["kıdem tazminatı"]
+
+
+def test_expand_query_returns_none_when_no_json_at_all(fake_ollama):
+    fake_ollama.set_response("Yalnızca düz metin, hiç JSON yok.")
+    assert ai_helper.expand_query("soru", model="test", host=fake_ollama.host) is None
+
+
+def test_json_mode_is_requested_for_structured_calls(fake_ollama):
+    """Ollama'nın format='json' kısıtı, yapısal çağrılarda istenmeli."""
+    fake_ollama.set_response('{"konu": "x", "kavramlar": ["y"]}')
+    ai_helper.expand_query("soru", model="test", host=fake_ollama.host)
+    assert fake_ollama.last_payload().get("format") == "json"
+
+
+def test_free_text_call_does_not_force_json(fake_ollama):
+    """Not üretimi serbest metin; JSON kısıtı dayatılmamalı."""
+    fake_ollama.set_stream(["düz metin yanıt"])
+    ai_helper.explain_with_ollama(
+        "s", [{"document_name": "a", "location": "1", "text": "t"}],
+        model="test", host=fake_ollama.host)
+    assert "format" not in fake_ollama.last_payload()
+
+
+def test_json_mode_falls_back_when_server_rejects_format(fake_ollama):
+    """format='json' desteklemeyen eski Ollama'da kısıtsız yeniden denenmeli."""
+    fake_ollama.reject_format()
+    fake_ollama.set_response('{"konu": "x", "kavramlar": ["y"]}')
+    result = ai_helper.expand_query("soru", model="test", host=fake_ollama.host)
+    assert result["kavramlar"] == ["y"]
+    assert fake_ollama.request_count() == 2  # önce format'lı, sonra kısıtsız
+    assert "format" not in fake_ollama.last_payload()
+
+
+# --- Parti dayanıklılığı --------------------------------------------------
+
+def _candidates(n):
+    return [{"document_name": f"d{i}", "location": str(i), "text": f"metin {i}"}
+            for i in range(n)]
+
+
+def test_failed_batch_is_retried_once(fake_ollama):
+    """Tek bozuk yanıt tüm aramayı düşürmemeli; parti bir kez yeniden denenir."""
+    fake_ollama.set_sequence(["bu JSON değil", '{"puanlar": {"0": 6, "1": 4}}'])
+    ranked = ai_helper.rank_by_relevance("s", _candidates(2), model="test",
+                                         host=fake_ollama.host, batch_size=2)
+    assert [r["ai_score"] for r in ranked] == [6.0, 4.0]
+    assert fake_ollama.request_count() == 2  # ilk deneme + yeniden deneme
+
+
+def test_unparseable_batch_does_not_abort_whole_search(fake_ollama):
+    """İkinci parti hiç çözümlenemezse ilk partinin sonuçları korunur."""
+    fake_ollama.set_sequence([
+        '{"puanlar": {"0": 8, "1": 1}}',   # 1. parti (2 deneme)
+        "bozuk", "bozuk",                   # 2. parti (2 deneme, ikisi de bozuk)
+    ])
+    warnings = []
+    ranked = ai_helper.rank_by_relevance("s", _candidates(4), model="test",
+                                         host=fake_ollama.host, batch_size=2,
+                                         on_warning=warnings.append)
+    assert len(ranked) == 4
+    scored = [r for r in ranked if r["ai_score"] is not None]
+    unscored = [r for r in ranked if r["ai_score"] is None]
+    assert [r["ai_score"] for r in scored] == [8.0, 1.0]
+    assert len(unscored) == 2
+    # Puanlananlar önce gelmeli, puanlanamayanlar sonda
+    assert ranked[0]["ai_score"] == 8.0
+    assert warnings and "puanlanamadı" in warnings[0]
+
+
+def test_unscored_results_keep_original_order(fake_ollama):
+    fake_ollama.set_sequence(["bozuk"])
+    ranked = ai_helper.rank_by_relevance("s", _candidates(3), model="test",
+                                         host=fake_ollama.host, batch_size=1)
+    assert [r["document_name"] for r in ranked] == ["d0", "d1", "d2"]
+    assert all(r["ai_score"] is None for r in ranked)

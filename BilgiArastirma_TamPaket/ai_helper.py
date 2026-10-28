@@ -47,9 +47,39 @@ def _classify(exc, host, model, read_timeout):
     return OllamaError(f"Ollama isteği başarısız oldu: {text}")
 
 
+def _stream_generate(url, payload, read_timeout, progress):
+    """Akışlı isteği gönderir ve üretilen metni birleştirir."""
+    response = requests.post(
+        url, json=payload,
+        timeout=(CONNECT_TIMEOUT, read_timeout), stream=True,
+    )
+    response.raise_for_status()
+    pieces = []
+    produced = 0
+    for line in response.iter_lines():
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        error = data.get("error")
+        if error:
+            raise OllamaError(f"Ollama hata döndürdü: {error}")
+        piece = data.get("response", "")
+        if piece:
+            pieces.append(piece)
+            produced += len(piece)
+            if progress:
+                progress(produced)
+        if data.get("done"):
+            break
+    return "".join(pieces).strip()
+
+
 def _ollama_generate(prompt, model, host, temperature=0.2,
                      read_timeout=DEFAULT_READ_TIMEOUT, keep_alive=DEFAULT_KEEP_ALIVE,
-                     progress=None):
+                     progress=None, json_mode=False):
     """Ollama'ya akışlı istek gönderir ve üretilen metni döndürür.
 
     Akış kullanmanın nedeni: `stream=False` isteğinde sunucu tüm yanıtı tek
@@ -57,41 +87,126 @@ def _ollama_generate(prompt, model, host, temperature=0.2,
     "bağlanılamadı" hatası görür (oysa bağlantı kurulmuştur). Akışta her parça
     ayrı geldiği için yavaş modellerde de istek tamamlanır; ayrıca ilerleme
     bildirilebilir.
+
+    `json_mode=True` iken Ollama'nın `format="json"` kısıtı kullanılır; küçük
+    modeller düz metin içine gömülü JSON üretmeye çalışsa da sunucu geçerli JSON
+    üretmeye zorlanır. Alanı desteklemeyen eski Ollama sürümleri 400 döndürürse
+    kısıt olmadan bir kez daha denenir.
     """
     url = f"{host.rstrip('/')}/api/generate"
+    payload = {"model": model, "prompt": prompt, "stream": True,
+               "keep_alive": keep_alive, "options": {"temperature": temperature}}
+    if json_mode:
+        payload["format"] = "json"
     try:
-        response = requests.post(
-            url,
-            json={"model": model, "prompt": prompt, "stream": True,
-                  "keep_alive": keep_alive, "options": {"temperature": temperature}},
-            timeout=(CONNECT_TIMEOUT, read_timeout), stream=True,
-        )
-        response.raise_for_status()
-        pieces = []
-        produced = 0
-        for line in response.iter_lines():
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                continue
-            error = payload.get("error")
-            if error:
-                raise OllamaError(f"Ollama hata döndürdü: {error}")
-            piece = payload.get("response", "")
-            if piece:
-                pieces.append(piece)
-                produced += len(piece)
-                if progress:
-                    progress(produced)
-            if payload.get("done"):
-                break
-        return "".join(pieces).strip()
+        try:
+            return _stream_generate(url, payload, read_timeout, progress)
+        except requests.exceptions.HTTPError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if json_mode and status in (400, 404):
+                payload.pop("format", None)  # eski Ollama: kısıtsız yeniden dene
+                return _stream_generate(url, payload, read_timeout, progress)
+            raise
     except OllamaError:
         raise
     except Exception as exc:
         raise _classify(exc, host, model, read_timeout) from exc
+
+
+def _balanced_regions(text):
+    """Metindeki dengeli `{...}` ve `[...]` bölgelerini (uzundan kısaya) döndürür."""
+    regions = []
+    for opener, closer in (("{", "}"), ("[", "]")):
+        stack = []
+        in_string = False
+        escaped = False
+        for i, ch in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == opener:
+                stack.append(i)
+            elif ch == closer and stack:
+                start = stack.pop()
+                regions.append(text[start:i + 1])
+    regions.sort(key=len, reverse=True)
+    return regions
+
+
+def _repair_json(text):
+    """Küçük modellerin yaygın JSON hatalarını onarır (tırnak, sondaki virgül, kesik)."""
+    fixed = text
+    # Tek tırnaklı JSON: kelime içi kesme işaretini (İşçi'nin) koruyarak çevir.
+    if '"' not in fixed and "'" in fixed:
+        fixed = re.sub(r"(?<=\w)'(?=\w)", "\u2019", fixed)
+        fixed = fixed.replace("'", '"')
+        fixed = fixed.replace("\u2019", "'")
+    # Sondaki virgüller: {"a": 1,} -> {"a": 1}
+    fixed = re.sub(r",\s*([}\]])", r"\1", fixed)
+    # Python/JS kalıntıları: None/True/False
+    fixed = re.sub(r"\bNone\b", "null", fixed)
+    fixed = re.sub(r"\bTrue\b", "true", fixed)
+    fixed = re.sub(r"\bFalse\b", "false", fixed)
+    return fixed
+
+
+def _extract_json(raw):
+    """Serbest model metninden JSON değerini çıkarır; bulamazsa None.
+
+    Model yanıtı çoğu zaman saf JSON olmaz: markdown kod bloğu, öncesinde/
+    sonrasında açıklama, tek tırnak veya sondaki virgül içerebilir. Sıra:
+    kod bloğu -> doğrudan ayrıştırma -> dengeli bölge taraması -> onarım.
+    """
+    if not raw:
+        return None
+    fence = re.search(r"```(?:json)?\s*(.+?)```", raw, re.S | re.I)
+    texts = ([fence.group(1)] if fence else []) + [raw]
+    for text in texts:
+        stripped = text.strip()
+        for candidate in (stripped, _repair_json(stripped)):
+            try:
+                return json.loads(candidate)
+            except ValueError:
+                pass
+        for region in _balanced_regions(stripped):
+            for candidate in (region, _repair_json(region)):
+                try:
+                    return json.loads(candidate)
+                except ValueError:
+                    pass
+    # Kesik yanıt: eksik kapanışları ekleyerek son bir deneme.
+    for text in texts:
+        closed = _repair_json(text.strip())
+        for _ in range(4):
+            closed += "}" if closed.count("{") > closed.count("}") else "]"
+            try:
+                return json.loads(closed)
+            except ValueError:
+                continue
+    return None
+
+
+def _as_score_map(data):
+    """Model yanıtını {indeks: puan} sözlüğüne normalleştirir.
+
+    Model `puanlar` alanını sözlük yerine liste olarak döndürebilir; her iki
+    biçim de kabul edilir.
+    """
+    if not isinstance(data, dict):
+        return {}
+    scores = data.get("puanlar", data)
+    if isinstance(scores, list):
+        return {str(i): v for i, v in enumerate(scores)}
+    if isinstance(scores, dict):
+        return scores
+    return {}
 
 
 def check_ollama(host="http://localhost:11434", model=None, timeout=5):
@@ -129,7 +244,7 @@ def expand_query(question, model="qwen2.5:3b", host="http://localhost:11434",
     prompt = f"""Aşağıdaki sınav sorusunu incele. Sorunun ölçtüğü konuyu ve cevap için
 aranması gereken anahtar kavramları çıkar. Seçeneklerdeki çeldirici ayrıntıları YOK SAY.
 
-Yalnızca JSON döndür, başka açıklama yazma:
+Yanıtı yalnızca şu şemada JSON olarak ver:
 {{"konu": "kısa konu adı", "kavramlar": ["kavram 1", "kavram 2", "kavram 3"]}}
 
 En fazla 6 kavram yaz; her kavram 1-3 kelime olsun.
@@ -138,29 +253,31 @@ SORU:
 {question}
 """
     raw = _ollama_generate(prompt, model, host, temperature=0.0,
-                           read_timeout=read_timeout, keep_alive=keep_alive)
-    match = re.search(r"\{.*\}", raw, re.S)
-    if not match:
+                           read_timeout=read_timeout, keep_alive=keep_alive, json_mode=True)
+    data = _extract_json(raw)
+    if not isinstance(data, dict):
         return None
-    try:
-        data = json.loads(match.group(0))
-    except ValueError:
+    raw_concepts = data.get("kavramlar") or data.get("kavram") or []
+    if isinstance(raw_concepts, str):
+        raw_concepts = [raw_concepts]
+    concepts = [str(c).strip() for c in raw_concepts if str(c).strip()]
+    konu = data.get("konu") or data.get("konu_adi") or ""
+    if not concepts and not konu:
         return None
-    concepts = [str(c).strip() for c in data.get("kavramlar", []) if str(c).strip()]
-    return {"konu": str(data.get("konu", "")).strip(), "kavramlar": concepts[:6]} or None
+    return {"konu": str(konu).strip(), "kavramlar": concepts[:6]}
 
 
 def _score_batch(question, batch, model, host, read_timeout, keep_alive):
     """Tek bir istekte bir grup parçayı puanlar; {indeks: puan} döndürür."""
-    listing = "\n".join(
-        f"[{i}] {r['document_name']} | {r['location']}\n{r['text'][:600]}"
+    listing = "\n\n".join(
+        f"[{i}] {r['document_name']} — {r['location']}\n{r['text'][:600]}"
         for i, r in enumerate(batch)
     )
     prompt = f"""Aşağıda bir soru ve kaynak parçaları verilmiştir. Her parçanın bu soruyla
 ilgisini 0-10 arasında puanla (10 = soruyu doğrudan yanıtlıyor, 0 = ilgisiz).
 Kelimeler aynı olmasa da anlam yakınsa yüksek puan ver.
 
-Yalnızca JSON döndür, başka açıklama yazma:
+Yanıtı yalnızca şu şemada JSON olarak ver:
 {{"puanlar": {{"0": 7, "1": 2}}}}
 Her parça için bir puan yaz. Puanlar 0-10 arası tam sayı olsun.
 
@@ -171,20 +288,17 @@ KAYNAK PARÇALARI:
 {listing}
 """
     raw = _ollama_generate(prompt, model, host, temperature=0.0,
-                           read_timeout=read_timeout, keep_alive=keep_alive)
-    match = re.search(r"\{.*\}", raw, re.S)
-    if not match:
+                           read_timeout=read_timeout, keep_alive=keep_alive, json_mode=True)
+    scores = _as_score_map(_extract_json(raw))
+    if not scores:
         raise OllamaError("Model geçerli bir puan listesi döndürmedi.")
-    try:
-        return json.loads(match.group(0)).get("puanlar", {})
-    except ValueError as exc:
-        raise OllamaError("Model yanıtı JSON olarak çözümlenemedi.") from exc
+    return scores
 
 
 def rank_by_relevance(question, results, model="qwen2.5:3b", host="http://localhost:11434",
                       max_candidates=30, batch_size=10,
                       read_timeout=DEFAULT_READ_TIMEOUT, keep_alive=DEFAULT_KEEP_ALIVE,
-                      progress=None):
+                      progress=None, on_warning=None):
     """Aday parçaları, soruyla anlamsal ilgilerine göre puanlatır.
 
     Kelime eşleşmesinin yakalayamadığı durumlar (eşanlamlılar, farklı çekimler)
@@ -192,27 +306,44 @@ def rank_by_relevance(question, results, model="qwen2.5:3b", host="http://localh
     tabanlı aramayla getirilmiştir; model yalnızca sıralar.
 
     Puanlama küçük gruplar hâlinde yapılır; tek büyük istek yavaş donanımda
-    zaman aşımına uğradığı için bu, isteği güvenilir kılar.
+    zaman aşımına uğradığı için bu, isteği güvenilir kılar. Bir parti
+    çözümlenemezse bir kez yeniden denenir, yine olmazsa o parti atlanır:
+    tek bir bozuk yanıt tüm aramayı düşürmemelidir.
     """
     if not results:
         return []
     candidates = results[:max_candidates]
     scored = []
+    unscored = []
     for start in range(0, len(candidates), batch_size):
         batch = candidates[start:start + batch_size]
-        scores = _score_batch(question, batch, model, host, read_timeout, keep_alive)
-        for offset, r in enumerate(batch):
+        scores = None
+        for attempt in (1, 2):
             try:
-                value = float(scores.get(str(offset), 0))
-            except (TypeError, ValueError):
-                value = 0.0
-            item = dict(r)
-            item["ai_score"] = max(0.0, min(10.0, value))
-            scored.append(item)
+                scores = _score_batch(question, batch, model, host, read_timeout, keep_alive)
+                break
+            except OllamaError as exc:
+                if attempt == 2:
+                    if on_warning:
+                        on_warning(f"{len(batch)} parça puanlanamadı ({exc})")
+                    for r in batch:
+                        item = dict(r)
+                        item["ai_score"] = None
+                        unscored.append(item)
+        if scores is not None:
+            for offset, r in enumerate(batch):
+                try:
+                    value = float(scores.get(str(offset), 0))
+                except (TypeError, ValueError):
+                    value = 0.0
+                item = dict(r)
+                item["ai_score"] = max(0.0, min(10.0, value))
+                scored.append(item)
         if progress:
             progress(min(start + batch_size, len(candidates)), len(candidates))
     scored.sort(key=lambda r: r["ai_score"], reverse=True)
-    return scored
+    # Puanlanamayanlar, puanlananların ardında özgün sıralarını korur.
+    return scored + unscored
 
 
 def explain_with_ollama(question, results, model="qwen2.5:3b", host="http://localhost:11434",

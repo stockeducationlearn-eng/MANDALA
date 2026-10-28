@@ -322,6 +322,7 @@ class App(tk.Tk):
                 self.after(0, lambda: self.status_var.set(
                     f"Akıllı arama: {model} sorudan kavramlar çıkarıyor…"))
                 concepts, warning = [], ""
+                warnings = []
                 try:
                     expanded = expand_query(q, model=model, **opts)
                     if expanded and expanded["kavramlar"]:
@@ -346,7 +347,13 @@ class App(tk.Tk):
                     self.after(0, lambda: self.status_var.set(
                         f"Akıllı arama: {model} ilgi puanlıyor… {done}/{total}"))
 
-                ranked = rank_by_relevance(q, merged, model=model, progress=report, **opts)
+                def warn(text):
+                    warnings.append(text)
+
+                ranked = rank_by_relevance(q, merged, model=model, progress=report,
+                                           on_warning=warn, **opts)
+                if warnings:
+                    warning += " ".join(warnings) + " "
                 self.after(0, lambda: self.finish_smart_search(ranked, warning, concepts))
             except OllamaError as exc:
                 msg = str(exc)
@@ -367,16 +374,24 @@ class App(tk.Tk):
                               ("[Akıllı] " + (self.get_query() or ""),))
             self.last_search_id = cur.lastrowid
             con.executemany("INSERT INTO results(search_id, chunk_id, score) VALUES (?, ?, ?)",
-                            [(self.last_search_id, r["chunk_id"], r.get("ai_score", 0.0)) for r in results])
+                            [(self.last_search_id, r["chunk_id"], r.get("ai_score") or 0.0) for r in results])
             con.commit()
+        unscored = 0
         for i, r in enumerate(results):
             preview = " ".join(r["text"].split())
             if len(preview) > 300:
                 preview = preview[:300] + "…"
+            score = r.get("ai_score")
+            if score is None:
+                unscored += 1
+                label = "—"
+            else:
+                label = f"{score:.0f}"
             self.result_tree.insert("", "end", iid=str(i),
-                values=(r["document_name"], r["location"], f'{r.get("ai_score", 0):.0f}', preview))
+                values=(r["document_name"], r["location"], label, preview))
         note = f" ({', '.join(concepts)})" if concepts else ""
-        self.status_var.set(warning + f"{len(results)} bölüm anlamsal ilgiye göre sıralandı{note}.")
+        extra = f" {unscored} parça puanlanamadı." if unscored else ""
+        self.status_var.set(warning + f"{len(results)} bölüm anlamsal ilgiye göre sıralandı{note}.{extra}")
         self.refresh_history()
 
     def ai_explain(self):

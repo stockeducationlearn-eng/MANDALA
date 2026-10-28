@@ -60,6 +60,14 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **Ollama ön kontrolü:** Uzun istekten önce `check_ollama()` ile sunucu ve model
   doğrulanır. Puanlama `batch_size` (varsayılan 10) ile gruplanır; tek büyük istek
   yavaş donanımda zaman aşımına uğrar.
+- **Ollama JSON çıktısı:** Yapısal çağrılarda `format="json"` istenir; eski sürümler
+  400 döndürürse kısıtsız yeniden denenir. Model yine de geçerli JSON vermeyebilir;
+  ayrıştırma için `_extract_json()` kullanın (kod bloğu -> doğrudan -> dengeli bölge ->
+  onarım -> kesik kapatma). Küçük modeller tek tırnak, sondaki virgül ve çevre metin
+  üretir; `_as_score_map()` liste biçimini de kabul eder.
+- **Ollama dayanıklılığı:** `rank_by_relevance` bozuk bir parti için bir kez yeniden
+  dener, yine olmazsa o partiyi `ai_score=None` ile döndürür (arama çökmez). Puanlananlar
+  önce, puanlanamayanlar özgün sırada sonda gelir; arayüz bunları "—" olarak gösterir.
 - **Metin kaynakları:** `text_sources.py` dış ağa yalnızca `requests` ile çıkar; dosya
   yazmaz. Web getirme `http`/`https` dışını reddeder ve yanıt boyutunu sınırlar.
   `app.py` içindeki `InputSourceDialog` ağır işleri (OCR, indirme) arka plan iş
