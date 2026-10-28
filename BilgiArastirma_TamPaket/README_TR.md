@@ -50,12 +50,17 @@ Tesseract OCR'ı ayrıca Windows'a kurun. Yaygın yol:
 Ayarlar penceresinde yolu belirtin. Türkçe OCR için `tur` dil verisi, İngilizce için `eng` dil verisi bulunmalıdır. Ayarlarda `tur+eng` kullanabilirsiniz. Tesseract kurulmamışsa metin tabanlı PDF/Word/TXT araması yine çalışır; taranmış sayfalardaki metinler çıkarılamayabilir.
 
 ## Ücretsiz yerel yapay zekâ (isteğe bağlı)
-1. Ollama'yı kurun.
-2. PowerShell'de `ollama pull qwen2.5:3b` çalıştırın.
-3. Ollama uygulaması çalışır durumdayken Bilgi Araştırma içinden `Kaynaklardan konu notu oluştur` seçeneğini kullanın.
-4. `Araştırma türü` alanında `Çıkmış soru`, `Paragraf / metin` veya `Kavram` seçin. Örneğin tek başına `tazminat` yazıp `Kavram` modunu seçebilirsiniz.
-5. Oluşan notu ekranda düzenleyip `Konu notunu arşivle` düğmesiyle veritabanına ve `exports/` klasörüne kaydedin.
-6. Ayarlar içinden model adını değiştirebilirsiniz.
+1. Ollama'yı kurun. Windows'ta masaüstü uygulaması arka planda servis olarak çalışır; ayrıca bir şey başlatmanız gerekmez.
+2. PowerShell'de gerekli modelleri indirin (her biri bir kez indirilir, sonra çevrimdışı çalışır):
+   - `ollama pull qwen2.5:3b` — konu notu ve model puanlaması için.
+   - `ollama pull nomic-embed-text` — hızlı akıllı arama (gömme) için; yaklaşık 275 MB.
+3. `ollama list` komutuyla iki modelin de listede göründüğünü doğrulayın.
+4. Ollama uygulaması çalışır durumdayken Bilgi Araştırma içinden `Kaynaklardan konu notu oluştur` seçeneğini kullanın.
+5. `Araştırma türü` alanında `Çıkmış soru`, `Paragraf / metin` veya `Kavram` seçin. Örneğin tek başına `tazminat` yazıp `Kavram` modunu seçebilirsiniz.
+6. Oluşan notu ekranda düzenleyip `Konu notunu arşivle` düğmesiyle veritabanına ve `exports/` klasörüne kaydedin.
+7. Ayarlar içinden model adlarını (`Ollama model adı`, `Gömme modeli`) değiştirebilirsiniz.
+
+**Gömme modelini indirdiğinizi nasıl anlarsınız:** `Hızlı akıllı arama (gömme)` işaretliyken model yüklü değilse uygulama "İndirmek için: ollama pull nomic-embed-text" mesajını gösterir. Gömme modeli indirmek istemezseniz bu onay kutusunu kaldırın; akıllı arama, zaten kurulu olan `qwen2.5:3b` ile model puanlaması modunda çalışır (daha yavaş, gömme modeli gerekmez).
 
 Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boyutuna bağlıdır. Temel arama için Ollama gerekmez. Uygulama yalnızca arama sonuçlarını modele gönderir; tüm 500 sayfalık kaynağı tek seferde göndermez. Model yanıtları yine de kaynak metniyle karşılaştırılmalıdır.
 
