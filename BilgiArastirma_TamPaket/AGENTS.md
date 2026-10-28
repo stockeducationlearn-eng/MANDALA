@@ -23,9 +23,9 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - `text_utils.py`: Türkçe harf katlama (`tr_lower`, `tr_upper`, `tr_fold_for_search`).
 - `database.py`: bağlantı yönetimi (`db()` context manager), şema, FTS5 indeksi.
 - `ingest.py`: dosya alma, SHA-256 dedup, PDF/DOCX/TXT/görsel metin çıkarımı + OCR.
-- `search_engine.py`: FTS5 + geri dönüş taraması, puanlama.
+- `search_engine.py`: FTS5 + geri dönüş taraması, kapsam süzgeci, puanlama.
 - `text_sources.py`: dökümandan paragraf listeleme, resim/ekran OCR, web sayfası metni.
-- `ai_helper.py`: Ollama prompt/istek.
+- `ai_helper.py`: Ollama prompt/istek, sorgu genişletme ve anlamsal sıralama.
 - `exporter.py`: TXT/DOCX/PDF/CSV rapor + ZIP yedek.
 
 ## Kritik kurallar
@@ -37,16 +37,29 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **FTS indeksi:** `chunks_fts` ham metni değil `tr_fold_for_search` ile katlanmış
   metni tutar; bu yüzden indeks yalnızca `database.add_chunks()` üzerinden
   güncellenir. Chunk'ları doğrudan INSERT ederseniz indeks ile veri ayrışır.
-- **Arama:** `search(..., ignore_turkish_case=...)`; duyarsız mod FTS5 kullanır,
-  duyarlı mod Python taramasına düşer. FTS5 yoksa otomatik geri dönüş vardır.
-- **Arama sorguları:** Türkçe ekler için önek (`"terim"*`) kullanılır.
+- **Arama:** `search(..., ignore_turkish_case=..., all_terms=..., min_coverage=...)`;
+  FTS5 yalnızca OR (varsayılan) aramada ve duyarsız modda kullanılır, çünkü FTS önek
+  eşleştirmesi ortak kökleri (`feshettiğinde`/`feshederse`) bulamaz. `all_terms=True`
+  olduğunda tam tarama + kapsam süzgeci devreye girer.
+- **Kapsam belge düzeyinde ölçülür:** `_document_coverages` terimleri belgenin tüm
+  parçaları üzerinden arar. Parça (satır) bazında ölçmek, tek parçaya sığmayan soru
+  metinlerinde yanlışlıkla boş sonuç verir.
+- **Durdurma kelimeleri:** `content_terms()` sınav/gündelik dil kelimelerini eler
+  (`text_utils.TR_STOPWORDS`). Ham terimler gerektiğinde `tokens()` kullanın.
+- **Arama sorguları:** Türkçe ekler için önek (`"terim"*`) ve ortak kök eşleşmesi
+  (`_term_matches`) kullanılır.
+- **Ollama:** `ai_helper.expand_query` ve `rank_by_relevance` ağ çağrısı yapar ve
+  hata durumunda istisna yükseltir; çağıran taraf (app.py) kullanıcıya anlaşılır
+  mesaj gösterip normal aramaya düşmelidir. Model "arayıcı" değil "jüri"dir: adaylar
+  önce kelime tabanlı aramayla getirilir.
 - **Metin kaynakları:** `text_sources.py` dış ağa yalnızca `requests` ile çıkar; dosya
   yazmaz. Web getirme `http`/`https` dışını reddeder ve yanıt boyutunu sınırlar.
   `app.py` içindeki `InputSourceDialog` ağır işleri (OCR, indirme) arka plan iş
   parçacığında yapar ve sonucu `after()` ile ana iş parçacığına taşır; Tk çağrılarını
   asla iş parçacığından yapmayın.
-- **Web kaynakları:** `documents.stored_path` bir URL de olabilir (`file_type='web'`).
-  Yolu dosya varsayarak kullanan her kod, URL durumunu ele almalı (bkz. `open_source`).
+- **Web kaynakları:** `documents.stored_path` yerel `.txt` kopyasını tutar; kaynak
+  adresi `documents.source_url` sütunundadır. Yolu dosya varsayarak kullanan her kod
+  `source_url` durumunu ele almalı (bkz. `open_source`).
 
 ## Notlar
 - `fonts/DejaVuSans.ttf` repoya gömülüdür; PDF raporlarında Türkçe karakterler

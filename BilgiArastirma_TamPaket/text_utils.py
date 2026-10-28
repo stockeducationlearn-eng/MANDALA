@@ -38,3 +38,33 @@ def tr_fold_for_search(text):
     folded = unicodedata.normalize("NFKD", folded)
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
     return unicodedata.normalize("NFC", folded)
+
+
+# Sınav sorusu ve gündelik dilde geçen, arama ayırt ediciliği olmayan kelimeler.
+# Katlanmış (tr_fold_for_search çıktısı) biçimde tutulur; bu yüzden "için" -> "icin".
+TR_STOPWORDS = frozenset("""
+acaba ama ancak ardindan artik aslinda az bana bazen bazi bazilari belki ben benden beni
+benim beri bes bile bin bir bircok biri birisi birkac birsuru biz bizden bize bizim boyle
+boylece bu buna bunda bundan bunlar bunlari bunlarin bunu bunun burada cok cunku da daha dahi
+de defa degil diger diye dolayi dolayisiyla eden ederek eger elbette en fakat filan gene gibi
+gore halen hani haric hatta hem hep hepsi her herhangi herkes hic hicbir icin icinde ile
+ilgili ise iste kac kadar karsi karsin kez ki kim kime kimi kimin kimse kisaca madem mi mu
+nasil ne neden nedenle nerede nereye nicin niye o olan olarak oldu oldugu oldugunu olmadigi
+olmak olmasi olmayan olmaz olsa olsun olup olur olursa oluyor on ona ondan onlar onlardan
+onlari onlarin onu onun orada oysa oyle ozellikle pek ragmen sadece sanki sen senden seni
+senin siz sizden size sizin sonra sey seyden seye seyi seyler soyle su suna sunda sundan
+sunlar sunlari sunlarin sunu sunun tarafindan tum tumu uzere var ve veya ya yani yine yoksa
+zaten
+soru cevap secenek secenekler secenegi asagida asagidaki asagidakiler asagidakilerden
+hangisi hangileri hangisinde hangisine hangisine dogru dogrudur yanlis yanlistir degildir
+nedir verilen ifade ifadeler ifadelerden ifadesi hangi durumda zaman hangi
+""".split())
+
+
+def is_stopword(token):
+    """Kelime, arama ayırt ediciliği olmayan bir durdurma kelimesi mi?
+
+    Karşılaştırma katlanmış biçim üzerinden yapılır; bu yüzden hem duyarlı
+    ("için") hem duyarsız ("icin") modda aynı sonucu verir.
+    """
+    return tr_fold_for_search(token) in TR_STOPWORDS

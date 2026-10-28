@@ -6,8 +6,9 @@ import threading, os, json, sys, subprocess, traceback
 import database
 from database import db
 from ingest import add_file
-from search_engine import search
-from ai_helper import explain_with_ollama
+from search_engine import (search, MATCH_CHOICES, match_from_label,
+                           label_from_settings)
+from ai_helper import explain_with_ollama, expand_query, rank_by_relevance
 from exporter import export_csv, export_results, backup_project
 
 ROOT = Path(__file__).resolve().parent
@@ -35,12 +36,17 @@ class App(tk.Tk):
     def load_settings(self):
         defaults = {"tesseract_path": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                     "ocr_lang": "tur+eng", "ollama_model": "qwen2.5:3b",
-                    "all_terms": False, "turkish_sensitive": False}
+                    "all_terms": False, "min_coverage": 0.0, "turkish_sensitive": False}
         if SETTINGS.exists():
             try:
                 defaults.update(json.loads(SETTINGS.read_text(encoding="utf-8")))
             except Exception:
                 pass
+        # Eski sürümde yalnızca "all_terms" vardı. Onay kutusu kaldırıldığı için
+        # eski True değeri, boş sonuç veren %100 yerine önerilen %60'a taşınır.
+        if "min_coverage" not in defaults or (
+                defaults["all_terms"] and not defaults.get("min_coverage")):
+            defaults["min_coverage"] = 0.6 if defaults.get("all_terms") else 0.0
         return defaults
 
     def save_settings_file(self):
@@ -103,8 +109,14 @@ class App(tk.Tk):
                                        values=("Otomatik", "Çıkmış soru", "Paragraf / metin", "Kavram"))
         self.mode_combo.pack(side="left", padx=(0, 6))
         ttk.Label(mode_row, text="Soru/seçenek, paragraf veya tek kavram girebilirsiniz.", foreground="#555").pack(side="left", padx=8)
-        self.all_terms_var = tk.BooleanVar(value=bool(self.settings.get("all_terms", False)))
-        ttk.Checkbutton(mode_row, text="Tüm kelimeler eşleşsin", variable=self.all_terms_var).pack(side="left", padx=8)
+        self.match_var = tk.StringVar(value=label_from_settings(
+            bool(self.settings.get("all_terms", False)),
+            self.settings.get("min_coverage", 0.0)))
+        ttk.Label(mode_row, text="Eşleşme:").pack(side="left", padx=(10, 2))
+        self.match_combo = ttk.Combobox(mode_row, textvariable=self.match_var, state="readonly", width=14,
+                                        values=[name for name, _a, _c in MATCH_CHOICES])
+        self.match_combo.pack(side="left")
+        self.match_combo.bind("<<ComboboxSelected>>", self.on_match_change)
         self.turkish_sensitive_var = tk.BooleanVar(value=bool(self.settings.get("turkish_sensitive", False)))
         ttk.Checkbutton(mode_row, text="Türkçe karakter duyarlı", variable=self.turkish_sensitive_var,
                         command=self.on_turkish_toggle).pack(side="left", padx=8)
@@ -125,6 +137,7 @@ class App(tk.Tk):
         action = ttk.Frame(right)
         action.pack(fill="x", pady=4)
         ttk.Button(action, text="Kaynaklardan konu notu oluştur (Ollama)", command=self.ai_explain).pack(side="left")
+        ttk.Button(action, text="Akıllı ara (Ollama)", command=self.ai_smart_search).pack(side="left", padx=5)
         ttk.Button(action, text="Konu notunu arşivle", command=self.save_research_note).pack(side="left", padx=5)
         ttk.Button(action, text="PDF raporu", command=lambda: self.export_report("pdf")).pack(side="left", padx=3)
         ttk.Button(action, text="Word raporu", command=lambda: self.export_report("docx")).pack(side="left", padx=3)
@@ -219,11 +232,12 @@ class App(tk.Tk):
         self.status_var.set("Aranıyor…")
         self.result_tree.delete(*self.result_tree.get_children())
         self.detail.delete("1.0", "end")
-        self.all_terms_var_value = self.all_terms_var.get()
+        self.all_terms_var_value, self.min_coverage_value = match_from_label(self.match_var.get())
         self.ignore_turkish_case_value = not self.turkish_sensitive_var.get()
         def worker():
             try:
                 sid, results = search(q, all_terms=self.all_terms_var_value,
+                                      min_coverage=self.min_coverage_value,
                                       ignore_turkish_case=self.ignore_turkish_case_value)
                 self.after(0, lambda: self.finish_search(sid, results))
             except Exception as exc:
@@ -271,6 +285,70 @@ class App(tk.Tk):
                 (r["document_id"], r["chunk_id"], r["document_name"] + " - " + r["location"], note))
             con.commit()
         self.status_var.set("Not veritabanına kaydedildi.")
+
+    def ai_smart_search(self):
+        """Ollama ile sorguyu genişletip adayları anlamsal ilgiye göre sıralar."""
+        q = self.get_query()
+        if not q:
+            messagebox.showwarning("Akıllı arama", "Bir soru veya anahtar kelime yazın.")
+            return
+        model = self.settings.get("ollama_model", "qwen2.5:3b")
+        self.status_var.set(f"Akıllı arama: {model} sorguyu hazırlıyor…")
+        self.result_tree.delete(*self.result_tree.get_children())
+        self.detail.delete("1.0", "end")
+        ignore_case = not self.turkish_sensitive_var.get()
+
+        def worker():
+            try:
+                concepts, warning = [], ""
+                try:
+                    expanded = expand_query(q, model=model)
+                    if expanded and expanded["kavramlar"]:
+                        concepts = expanded["kavramlar"]
+                except Exception as exc:
+                    warning = f"Sorgu genişletilemedi ({exc}); özgün sorguyla devam edildi. "
+                # Geniş aday havuzu: özgün sorgu + modelin çıkardığı kavramlar.
+                merged, seen = [], set()
+                for probe in [q, " ".join(concepts)]:
+                    if not probe.strip():
+                        continue
+                    _, found = search(probe, ignore_turkish_case=ignore_case)
+                    for r in found:
+                        if r["chunk_id"] not in seen:
+                            seen.add(r["chunk_id"])
+                            merged.append(r)
+                if not merged:
+                    self.after(0, lambda: self.finish_smart_search([], warning, concepts))
+                    return
+                ranked = rank_by_relevance(q, merged, model=model)
+                self.after(0, lambda: self.finish_smart_search(ranked, warning, concepts))
+            except Exception as exc:
+                err = ("Ollama'ya bağlanılamadı. Ollama kurulu, çalışır ve model indirilmiş olmalı.\n\n"
+                       "Kurulum komutu örneği: ollama pull " + model + "\n\nTeknik ayrıntı: " + str(exc))
+                self.after(0, lambda: messagebox.showerror("Akıllı arama", err))
+                self.after(0, lambda: self.status_var.set("Akıllı arama başarısız."))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_smart_search(self, results, warning, concepts):
+        self.last_results = results
+        # Akıllı arama sonuçları da normal arama gibi kaydedilir; böylece not
+        # ekleme ve geçmiş çalışmaya devam eder.
+        with db() as con:
+            cur = con.execute("INSERT INTO searches(query, created_at) VALUES (?, datetime('now','localtime'))",
+                              ("[Akıllı] " + (self.get_query() or ""),))
+            self.last_search_id = cur.lastrowid
+            con.executemany("INSERT INTO results(search_id, chunk_id, score) VALUES (?, ?, ?)",
+                            [(self.last_search_id, r["chunk_id"], r.get("ai_score", 0.0)) for r in results])
+            con.commit()
+        for i, r in enumerate(results):
+            preview = " ".join(r["text"].split())
+            if len(preview) > 300:
+                preview = preview[:300] + "…"
+            self.result_tree.insert("", "end", iid=str(i),
+                values=(r["document_name"], r["location"], f'{r.get("ai_score", 0):.0f}', preview))
+        note = f" ({', '.join(concepts)})" if concepts else ""
+        self.status_var.set(warning + f"{len(results)} bölüm anlamsal ilgiye göre sıralandı{note}.")
+        self.refresh_history()
 
     def ai_explain(self):
         if not self.last_results:
@@ -362,6 +440,16 @@ class App(tk.Tk):
         self.save_settings_file()
         self.status_var.set("Arama Türkçe karakter duyarlı." if self.turkish_sensitive_var.get()
                             else "Arama Türkçe karakter duyarsız (ç/ğ/ı/ş... eşitlenir).")
+
+    def on_match_change(self):
+        all_terms, coverage = match_from_label(self.match_var.get())
+        self.settings["all_terms"] = bool(all_terms)
+        self.settings["min_coverage"] = coverage
+        self.save_settings_file()
+        if all_terms:
+            self.status_var.set(f"Eşleşme: terimlerin en az %{int(coverage * 100)} kadarı aranır.")
+        else:
+            self.status_var.set("Eşleşme: terimlerden herhangi biri yeterli.")
 
     def refresh_history(self):
         self.history.delete(0, "end")

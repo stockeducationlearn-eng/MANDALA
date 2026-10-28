@@ -31,3 +31,17 @@ def test_fold_strips_turkish_diacritics():
 def test_fold_is_idempotent():
     once = tr_fold_for_search("Çalışma İstanbul IĞDIR")
     assert tr_fold_for_search(once) == once
+
+
+def test_stopwords_are_recognized_in_both_modes():
+    from text_utils import is_stopword
+    for word in ("için", "icin", "hangi", "durumda", "her", "ve"):
+        assert is_stopword(word), word
+    for word in ("kıdem", "tazminatı", "feshederse", "sözleşme"):
+        assert not is_stopword(word), word
+
+
+def test_is_stopword_folds_turkish_case():
+    from text_utils import is_stopword
+    assert is_stopword("İÇİN")
+    assert is_stopword("IÇIN") or is_stopword("için")

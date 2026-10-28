@@ -69,7 +69,23 @@ Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boy
 Bu klasörü yedeklemek için uygulamadaki `Yedek oluştur` düğmesini kullanın. Veritabanı ile belge arşivi birlikte ZIP'e alınır.
 
 ## Arama davranışı
-Arama, SQLite FTS5 tam metin indeksi (Türkçe katlanmış metin üzerinde) ve kelime örtüşmesine dayanır; gelişmiş vektör tabanlı anlamsal arama içermez. FTS5 bulunmayan ortamlarda otomatik olarak Python taramasına düşer. Türkçe ekler için önek eşleşmesi kullanılır (`tazminat` -> `tazminatı`). Soru metnini seçenekleriyle birlikte veya tek kavram olarak aratabilirsiniz. Ollama, aramada bulunan kaynak parçalarına göre not hazırlar; arşivde bulunmayan bilgileri kaynaklardan doğrulayamaz. Üretilen notları kaynaklarla karşılaştırın. OCR hataları, tablolar ve karmaşık sayfa düzenleri sonuçları etkileyebilir.
+Arama, SQLite FTS5 tam metin indeksi (Türkçe katlanmış metin üzerinde) ve kelime örtüşmesine dayanır; gelişmiş vektör tabanlı anlamsal arama içermez. FTS5 bulunmayan ortamlarda otomatik olarak Python taramasına düşer. Türkçe ekler için önek eşleşmesi kullanılır (`tazminat` -> `tazminatı`). Soru metnini seçenekleriyle birlikte veya tek kavram olarak aratabilirsiniz.
+
+### Eşleşme oranı
+`Eşleşme` alanı, sonuçların ne kadar sıkı süzüleceğini belirler:
+
+- `Herhangi biri`: sorgudaki terimlerden en az biri geçen bölümler (varsayılan).
+- `Çoğu (%60)`: terimlerin en az %60'ı kaynakta geçen belgeler. Soru metni için önerilir.
+- `Çok (%80)` / `Tümü (%100)`: daha katı süzme. `Tümü`, terimlerin tamamını arar ve uzun soru metinlerinde sık sık boş sonuç verir.
+
+Sınav sorusu veya uzun paragraf gibi girdilerde `Tümü (%100)` yerine `Çoğu (%60)` kullanın; seçeneklerdeki çeldirici kelimeler ve farklı çekimler yüzünden tüm terimlerin birebir geçmesi beklenmemelidir. Arama, soru ve gündelik dilde sık geçen ama ayırt ediciliği olmayan kelimeleri (`soru`, `hangi`, `için`, `her` gibi) otomatik olarak eler.
+
+Kapsam, parça (satır/sayfa) yerine belge düzeyinde ölçülür; çünkü bir soru tek parçaya sığmaz. Farklı çekimler ortak kök üzerinden eşleşir (`feshettiğinde` -> `feshederse`).
+
+### Akıllı arama (Ollama)
+`Akıllı ara (Ollama)` düğmesi iki aşamalı çalışır: önce model sorudan anahtar kavramları çıkarır (seçenekleri yok sayar), sonra getirilen adayları soruyla anlamsal ilgilerine göre 0-10 arası puanlayıp sıralar. Kelime eşleşmesinin kaçırdığı eşanlamlı ve farklı çekimli ifadeleri yakalar. Ollama gerekir; yoksa uyarı verir ve normal arama kullanılabilir kalır.
+
+Ollama, aramada bulunan kaynak parçalarına göre not hazırlar; arşivde bulunmayan bilgileri kaynaklardan doğrulayamaz. Üretilen notları kaynaklarla karşılaştırın. OCR hataları, tablolar ve karmaşık sayfa düzenleri sonuçları etkileyebilir.
 
 ## Testler
 Geliştirme bağımlılıklarını kurup testleri çalıştırın:
