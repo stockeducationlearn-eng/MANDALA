@@ -5,6 +5,7 @@ nokta) ve "I" -> "i" üretir. SQLite'ın unicode61 tokenizer'ı da i/ı ayrımı
 çözmez. Bu modül Türkçe kurallarına uygun katlama sağlar.
 """
 
+import re
 import unicodedata
 
 _TURKISH_LOWER = str.maketrans({"İ": "i", "I": "ı"})
@@ -38,6 +39,98 @@ def tr_fold_for_search(text):
     folded = unicodedata.normalize("NFKD", folded)
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
     return unicodedata.normalize("NFC", folded)
+
+
+_LETTERS = re.compile(r"[^\W\d_]+", re.UNICODE)
+_SENTENCE_END = (".", "!", "?", ":", ";", "…")
+# Satır sonunda bölünmüş kelimenin devamını tanımak için yaygın Türkçe ekler.
+_SUFFIXES = (
+    "larina", "lerine", "larinda", "lerinde", "larini", "lerini",
+    "lari", "leri", "lar", "ler", "mesi", "masi", "ması", "mesı",
+    "nin", "nın", "nun", "nün", "sini", "sıni", "ini", "ını", "unu", "ünü",
+    "den", "dan", "ten", "tan", "lik", "lık", "luk", "lük", "dir", "dır", "dur", "dür",
+    "de", "da", "te", "ta", "me", "ma", "si", "sı", "su", "sü", "i", "ı", "u", "ü", "e", "a",
+)
+
+
+def _vocabulary(text):
+    """Metindeki tüm kelimeleri (küçük harfe indirilmiş) sayar."""
+    counts = {}
+    for word in _LETTERS.findall(text):
+        key = tr_lower(word)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _looks_joined(tail_word, head_word, vocab):
+    """İki parça birleşince gerçek bir kelime oluşuyor mu?
+
+    Belgede bölünmüş kelimeler yalnızca kırık biçimde geçebildiği için düz
+    sözlük kontrolü yetmez ("zedelen"+"mesi" -> "zedelenmesi" belgede yok).
+    Bu yüzden yaygın Türkçe ekler de soyulup gövde aranır.
+    """
+    if len(tail_word) < 2 or len(head_word) < 2:
+        return False
+    joined = tail_word + head_word
+    if joined in vocab:
+        return True
+    for suffix in _SUFFIXES:
+        if joined.endswith(suffix) and len(joined) > len(suffix) + 2:
+            stem = joined[: -len(suffix)]
+            if stem in vocab:
+                return True
+    return False
+
+
+def split_paragraphs(text, max_chars=900, vocabulary=None):
+    """Satırlara bölünmüş metni paragraflara birleştirir.
+
+    PDF/DOCX çıkarımı metni sabit genişlikte sarar; her satırı ayrı parça
+    saymak hem sonuç listesini şişirir (3-4 satırlık metin 15 kaynak olur)
+    hem de aramayı zayıflatır, çünkü bir cümle tek satıra sığmaz. Burada
+    ardışık satırlar cümle bitişi, başlık ve uzunluk sınırına göre
+    paragraflara toplanır.
+
+    Satır sonunda bölünmüş kelimeler belge sözlüğüne ve Türkçe ek yapısına
+    bakılarak onarılır ("öde"+"nir" -> "ödenir"). Belgede yalnızca kırık
+    biçimde geçen ve ek soyma ile de tanınamayan kelimeler onarılamaz; bu
+    durumda boşlukla birleştirilir (yanlış birleştirmeden daha güvenli).
+    """
+    vocab = vocabulary if vocabulary is not None else _vocabulary(text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    paragraphs = []
+    for line in lines:
+        if not line:
+            paragraphs.append(None)   # boş satır paragraf sınırıdır
+            continue
+        if not paragraphs or paragraphs[-1] is None:
+            paragraphs.append(line)
+            continue
+        previous = paragraphs[-1]
+        ends_sentence = previous.rstrip().endswith(_SENTENCE_END)
+        # Başlık gibi kısa ve noktalama ile bitmeyen satırlardan sonra yeni
+        # paragraf başlar (ör. "Hukukun Temel Kavramları" + "Manevi tazminat…").
+        heading_like = len(previous) < 60 and not ends_sentence
+        starts_new = (
+            (ends_sentence and len(previous) > 40 and line[:1].isupper())
+            or (heading_like and line[:1].isupper())
+        )
+        if starts_new or len(previous) >= max_chars:
+            paragraphs.append(line)
+            continue
+        if previous.endswith("-"):
+            paragraphs[-1] = previous[:-1] + line          # tire ile bölünmüş kelime
+            continue
+        tail = _LETTERS.search(previous[::-1])
+        head = _LETTERS.match(line)
+        if tail and head:
+            tail_word = tail.group(0)[::-1]
+            head_word = head.group(0)
+            if _looks_joined(tr_lower(tail_word), tr_lower(head_word), vocab):
+                paragraphs[-1] = previous + line            # bölünmüş kelime
+                continue
+        paragraphs[-1] = previous + " " + line              # normal satır kaydırması
+    return [p for p in paragraphs if p]
 
 
 # Sınav sorusu ve gündelik dilde geçen, arama ayırt ediciliği olmayan kelimeler.

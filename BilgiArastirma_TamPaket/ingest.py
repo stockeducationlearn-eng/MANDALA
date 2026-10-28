@@ -5,6 +5,7 @@ import fitz
 from docx import Document as DocxDocument
 import pytesseract
 from database import db, add_chunks
+from text_utils import split_paragraphs, _vocabulary
 
 ROOT = Path(__file__).resolve().parent
 DOC_DIR = ROOT / "documents"
@@ -38,6 +39,7 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
     configure_tesseract(tesseract_path)
     if ext == ".pdf":
         with fitz.open(path) as doc:
+            pages = []
             for i, page in enumerate(doc, 1):
                 text = page.get_text("text").strip()
                 if len(text) < 20 and tesseract_path and Path(tesseract_path).exists():
@@ -47,7 +49,15 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
                     except Exception as exc:
                         text = text or f"[Sayfa OCR hatası: {exc}]"
                 if text:
-                    chunks.append((f"PDF sayfa {i}", text))
+                    pages.append((i, text))
+            # Kelime onarımı belgenin tümüne bakılarak yapılır; tek sayfa
+            # sözlüğü seyrek kalır ve satır sonu bölünmelerini kaçırır.
+            vocab = _vocabulary("\n".join(t for _, t in pages))
+            for i, text in pages:
+                paras = split_paragraphs(text, vocabulary=vocab)
+                for j, para in enumerate(paras, 1):
+                    loc = f"PDF sayfa {i}" if len(paras) == 1 else f"PDF sayfa {i}, paragraf {j}"
+                    chunks.append((loc, para))
     elif ext == ".docx":
         doc = DocxDocument(path)
         for i, para in enumerate(doc.paragraphs, 1):
@@ -60,9 +70,8 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
                     chunks.append((f"Tablo {ti}, satır {ri}", txt))
     elif ext == ".txt":
         text = path.read_text(encoding="utf-8", errors="replace")
-        for i, line in enumerate(text.splitlines(), 1):
-            if line.strip():
-                chunks.append((f"Satır {i}", line.strip()))
+        for i, para in enumerate(split_paragraphs(text), 1):
+            chunks.append((f"Paragraf {i}", para))
     elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
         if tesseract_path and Path(tesseract_path).exists():
             chunks.append(("Görsel", ocr_pil(Image.open(path), ocr_lang)))
@@ -104,9 +113,12 @@ def _store_text(name, file_type, source_text, origin, digest):
     dest = DOC_DIR / f"{digest[:12]}_{safe_name(name)}.txt"
     if not dest.exists():
         dest.write_text(source_text, encoding="utf-8")
-    lines = [(f"Satır {i}", line.strip()) for i, line in enumerate(source_text.splitlines(), 1) if line.strip()]
-    if not lines:
-        lines = [("Metin", source_text.strip() or "(boş)")]
+    # Satır satır kaydetmek yerine paragraf birleştirilir: satır başına parça,
+    # bir cümleyi 10+ ayrı kaynağa böler ve aramayı zayıflatır.
+    paragraphs = split_paragraphs(source_text)
+    if not paragraphs:
+        paragraphs = [source_text.strip() or "(boş)"]
+    lines = [(f"Paragraf {i}", para) for i, para in enumerate(paragraphs, 1)]
     with db() as con:
         cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status, source_url)
             VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?)""",

@@ -4,12 +4,33 @@ import pytest
 
 
 
-def test_extract_txt_splits_lines(ingest_dir, tmp_path):
+def test_extract_txt_splits_paragraphs(ingest_dir, tmp_path):
     src = tmp_path / "belge.txt"
-    src.write_text("Birinci satır\n\nİkinci satır\n", encoding="utf-8")
+    src.write_text("Birinci paragraf\n\nİkinci paragraf\n", encoding="utf-8")
     chunks = ingest_dir.extract_file(src)
-    assert [loc for loc, _ in chunks] == ["Satır 1", "Satır 3"]
-    assert chunks[0][1] == "Birinci satır"
+    assert [loc for loc, _ in chunks] == ["Paragraf 1", "Paragraf 2"]
+    assert chunks[0][1] == "Birinci paragraf"
+
+
+def test_extract_txt_joins_wrapped_lines(ingest_dir, tmp_path):
+    """PDF/OCR çıktısı gibi sarılmış satırlar tek paragrafta birleşmeli."""
+    src = tmp_path / "sarilmis.txt"
+    src.write_text("Manevi tazminat iki hâlde öde\nnir. Bu ödenir.\n", encoding="utf-8")
+    chunks = ingest_dir.extract_file(src)
+    assert len(chunks) == 1
+    assert chunks[0][1] == "Manevi tazminat iki hâlde ödenir. Bu ödenir."
+
+
+def test_extract_txt_unknown_broken_word_stays_spaced(ingest_dir, tmp_path):
+    """Belgede bütün hâli hiç geçmeyen bölünme onarılamaz; boşlukla birleşir.
+
+    Yanlış birleştirme (iki kelimeyi birleştirmek) daha büyük hata olduğu için
+    emin olunmayan durumda boşluk korunur.
+    """
+    src = tmp_path / "bilinmeyen.txt"
+    src.write_text("Burada zzqq\nyyww yazıyor.\n", encoding="utf-8")
+    chunks = ingest_dir.extract_file(src)
+    assert chunks[0][1] == "Burada zzqq yyww yazıyor."
 
 
 def test_extract_docx_paragraphs_and_tables(ingest_dir, tmp_path):

@@ -82,7 +82,21 @@ Sınav sorusu veya uzun paragraf gibi girdilerde `Tümü (%100)` yerine `Çoğu 
 
 Kapsam, parça (satır/sayfa) yerine belge düzeyinde ölçülür; çünkü bir soru tek parçaya sığmaz. Farklı çekimler ortak kök üzerinden eşleşir (`feshettiğinde` -> `feshederse`).
 
+### Kaynak metni nasıl saklanır
+PDF/DOCX/TXT çıkarımı metni sabit genişlikte sarar; her satırı ayrı parça saymak 3-4 satırlık bir metni 15 ayrı kaynak hâline getirir ve aramayı zayıflatır (bir cümle tek satıra sığmaz). Bu yüzden ardışık satırlar paragraflara birleştirilir. Satır sonunda bölünen kelimeler belge sözlüğüne ve Türkçe ek yapısına bakılarak onarılır ("öde"+"nir" → "ödenir").
+
+Sınır: belgede yalnızca kırık biçimde geçen ve ek soyma ile de tanınamayan bir bölünme onarılamaz; bu durumda iki parça boşlukla birleştirilir. Yanlış birleştirme (iki ayrı kelimeyi birleştirmek) daha büyük hata olduğu için emin olunmayan durumda boşluk korunur.
+
 ### Akıllı arama (Ollama)
+İki mod vardır:
+
+- **Hızlı akıllı arama (gömme)** — varsayılan. Soru ve adaylar vektöre çevrilir (`nomic-embed-text`), benzerlik ölçülür. Metin üretilmediği için saniyeler sürer.
+- **Model puanlaması** — model her adaya 0-10 puan verir. Daha ayrıntılıdır ama yavaştır.
+
+Her iki modda da en düşük ilgi puanının (varsayılan 3) altındaki sonuçlar gizlenir; 0 puanlı ilgisiz parçalar listeyi doldurup asıl kaynağı gizlemesin.
+
+Gömme modelini bir kez indirmeniz gerekir: `ollama pull nomic-embed-text`. Ayarlar > `Gömme modeli`.
+
 `Akıllı ara (Ollama)` düğmesi iki aşamalı çalışır: önce model sorudan anahtar kavramları çıkarır (seçenekleri yok sayar), sonra getirilen adayları soruyla anlamsal ilgilerine göre 0-10 arası puanlayıp sıralar. Kelime eşleşmesinin kaçırdığı eşanlamlı ve farklı çekimli ifadeleri yakalar. Ollama gerekir; yoksa uyarı verir ve normal arama kullanılabilir kalır.
 
 İstekler **akışlı** (streaming) gönderilir: model yanıtı parça parça ürettiği için yavaş bilgisayarlarda da istek tamamlanır ve durum çubuğunda ilerleme görünür. Arama başlamadan önce Ollama'nın çalışıp çalışmadığı ve modelin yüklü olup olmadığı hızlıca kontrol edilir. Yapısal çağrılarda Ollama'nın JSON kısıtı (`format: json`) kullanılır; yine de model geçerli JSON döndürmezse yanıt içinden JSON ayıklanır (markdown bloğu, çevre metin, tek tırnak, sondaki virgül). Tek bir parça puanlanamazsa arama çökmez; o parça puansız listelenir.

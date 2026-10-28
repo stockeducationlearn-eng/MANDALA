@@ -9,7 +9,7 @@ from ingest import add_file
 from search_engine import (search, MATCH_CHOICES, match_from_label,
                            label_from_settings)
 from ai_helper import (explain_with_ollama, expand_query, rank_by_relevance,
-                       check_ollama, OllamaError)
+                       check_ollama, OllamaError, rank_by_embedding, filter_by_score)
 from exporter import export_csv, export_results, backup_project
 
 ROOT = Path(__file__).resolve().parent
@@ -122,6 +122,9 @@ class App(tk.Tk):
         self.turkish_sensitive_var = tk.BooleanVar(value=bool(self.settings.get("turkish_sensitive", False)))
         ttk.Checkbutton(mode_row, text="Türkçe karakter duyarlı", variable=self.turkish_sensitive_var,
                         command=self.on_turkish_toggle).pack(side="left", padx=8)
+        self.fast_smart_var = tk.BooleanVar(value=bool(self.settings.get("ai_fast_mode", True)))
+        ttk.Checkbutton(mode_row, text="Hızlı akıllı arama (gömme)", variable=self.fast_smart_var,
+                        command=self.on_fast_toggle).pack(side="left", padx=8)
         self.status_var = tk.StringVar(value="Hazır — önce kaynak dosyalarınızı ekleyin.")
         ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(2, 5))
 
@@ -295,7 +298,8 @@ class App(tk.Tk):
         except (TypeError, ValueError):
             timeout = 300
         return {"read_timeout": max(30, timeout),
-                "keep_alive": self.settings.get("ollama_keep_alive", "30m")}
+                "keep_alive": self.settings.get("ollama_keep_alive", "30m"),
+                "host": self.settings.get("ollama_host", "http://localhost:11434")}
 
     def ai_smart_search(self):
         """Ollama ile sorguyu genişletip adayları anlamsal ilgiye göre sıralar."""
@@ -304,6 +308,12 @@ class App(tk.Tk):
             messagebox.showwarning("Akıllı arama", "Bir soru veya anahtar kelime yazın.")
             return
         model = self.settings.get("ollama_model", "qwen2.5:3b")
+        embed_model = self.settings.get("ollama_embed_model", "nomic-embed-text")
+        fast = bool(self.fast_smart_var.get())
+        try:
+            min_score = float(self.settings.get("ai_min_score", 3))
+        except (TypeError, ValueError):
+            min_score = 3.0
         opts = self.ollama_options()
         self.status_var.set("Akıllı arama: Ollama kontrol ediliyor…")
         self.result_tree.delete(*self.result_tree.get_children())
@@ -314,21 +324,23 @@ class App(tk.Tk):
             try:
                 # Uzun bir isteğe başlamadan önce hızlı ön kontrol: sunucu ayakta mı,
                 # model yüklü mü? Böylece kullanıcı dakikalarca bekletilmez.
-                status = check_ollama(model=model)
+                # Hızlı modda metin üretilmediği için üretim modeli aranmaz.
+                needed = embed_model if fast else model
+                status = check_ollama(model=needed, host=opts["host"])
                 if not status["ok"] or not status["model_present"]:
                     self.after(0, lambda: messagebox.showerror("Akıllı arama", status["message"]))
                     self.after(0, lambda: self.status_var.set("Akıllı arama: Ollama hazır değil."))
                     return
-                self.after(0, lambda: self.status_var.set(
-                    f"Akıllı arama: {model} sorudan kavramlar çıkarıyor…"))
-                concepts, warning = [], ""
-                warnings = []
-                try:
-                    expanded = expand_query(q, model=model, **opts)
-                    if expanded and expanded["kavramlar"]:
-                        concepts = expanded["kavramlar"]
-                except OllamaError as exc:
-                    warning = f"Sorgu genişletilemedi ({exc}); özgün sorguyla devam edildi. "
+                concepts, warning, warnings = [], "", []
+                if not fast:
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama: {model} sorudan kavramlar çıkarıyor…"))
+                    try:
+                        expanded = expand_query(q, model=model, **opts)
+                        if expanded and expanded["kavramlar"]:
+                            concepts = expanded["kavramlar"]
+                    except OllamaError as exc:
+                        warning = f"Sorgu genişletilemedi ({exc}); özgün sorguyla devam edildi. "
                 # Geniş aday havuzu: özgün sorgu + modelin çıkardığı kavramlar.
                 merged, seen = [], set()
                 for probe in [q, " ".join(concepts)]:
@@ -350,10 +362,26 @@ class App(tk.Tk):
                 def warn(text):
                     warnings.append(text)
 
-                ranked = rank_by_relevance(q, merged, model=model, progress=report,
-                                           on_warning=warn, **opts)
+                if fast:
+                    # Gömme ile sıralama: metin üretilmez, vektör karşılaştırılır.
+                    # Bu yüzden yavaş bilgisayarlarda bile saniyeler sürer.
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama (hızlı): {embed_model} benzerlik hesaplıyor…"))
+                    ranked = rank_by_embedding(
+                        q, merged, model=embed_model, host=opts.get("host", "http://localhost:11434"),
+                        read_timeout=opts["read_timeout"],
+                        progress=lambda n: self.after(0, lambda: self.status_var.set(
+                            f"Akıllı arama (hızlı): {n} parça vektörlendi…")))
+                else:
+                    ranked = rank_by_relevance(q, merged, model=model, progress=report,
+                                               on_warning=warn, **opts)
                 if warnings:
                     warning += " ".join(warnings) + " "
+                # 0 puanlı ilgisiz parçalar listeyi doldurup asıl kaynağı gizler.
+                before = len(ranked)
+                ranked = filter_by_score(ranked, min_score=min_score)
+                if before and not ranked:
+                    warning += "Hiçbir parça ilgi eşiğini geçemedi; eşiği düşürmeyi deneyin. "
                 self.after(0, lambda: self.finish_smart_search(ranked, warning, concepts))
             except OllamaError as exc:
                 msg = str(exc)
@@ -495,6 +523,12 @@ class App(tk.Tk):
         self.status_var.set("Arama Türkçe karakter duyarlı." if self.turkish_sensitive_var.get()
                             else "Arama Türkçe karakter duyarsız (ç/ğ/ı/ş... eşitlenir).")
 
+    def on_fast_toggle(self):
+        self.settings["ai_fast_mode"] = bool(self.fast_smart_var.get())
+        self.save_settings_file()
+        self.status_var.set("Akıllı arama hızlı modda (gömme benzerliği)." if self.fast_smart_var.get()
+                            else "Akıllı arama model puanlamasıyla (yavaş, daha ayrıntılı).")
+
     def on_match_change(self):
         all_terms, coverage = match_from_label(self.match_var.get())
         self.settings["all_terms"] = bool(all_terms)
@@ -532,7 +566,7 @@ class App(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("Ayarlar")
-        win.geometry("720x430")
+        win.geometry("720x560")
         win.transient(self)
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
@@ -551,18 +585,32 @@ class App(tk.Tk):
         ttk.Entry(frm, textvariable=timeout, width=10).grid(row=7, column=0, sticky="w")
         ttk.Label(frm, text="Yavaş bilgisayarlarda model uzun süre yanıt üretmezse bu değeri artırın.",
                   foreground="#555").grid(row=8, column=0, sticky="w")
+        ttk.Label(frm, text="Gömme modeli (hızlı akıllı arama için, ör. nomic-embed-text):").grid(
+            row=9, column=0, sticky="w", pady=(10, 2))
+        embed = tk.StringVar(value=self.settings.get("ollama_embed_model", "nomic-embed-text"))
+        ttk.Entry(frm, textvariable=embed, width=30).grid(row=10, column=0, sticky="w")
+        ttk.Label(frm, text="En düşük ilgi puanı (0-10 arası; altındaki sonuçlar gizlenir):").grid(
+            row=11, column=0, sticky="w", pady=(10, 2))
+        minscore = tk.StringVar(value=str(self.settings.get("ai_min_score", 3)))
+        ttk.Entry(frm, textvariable=minscore, width=10).grid(row=12, column=0, sticky="w")
         def save():
             try:
                 secs = max(30, int(float(timeout.get().strip())))
             except (TypeError, ValueError):
                 secs = 300
+            try:
+                min_ai = max(0.0, min(10.0, float(minscore.get().strip().replace(",", "."))))
+            except (TypeError, ValueError):
+                min_ai = 3.0
             self.settings.update({"tesseract_path": tess.get().strip(), "ocr_lang": lang.get().strip() or "tur+eng",
                                   "ollama_model": model.get().strip() or "qwen2.5:3b",
+                                  "ollama_embed_model": embed.get().strip() or "nomic-embed-text",
+                                  "ai_min_score": min_ai,
                                   "ollama_timeout": secs})
             self.save_settings_file()
             win.destroy()
             messagebox.showinfo("Ayarlar", "Ayarlar kaydedildi.")
-        ttk.Button(frm, text="Kaydet", command=save).grid(row=9, column=0, sticky="w", pady=12)
+        ttk.Button(frm, text="Kaydet", command=save).grid(row=13, column=0, sticky="w", pady=12)
 
     def on_close(self):
         try:

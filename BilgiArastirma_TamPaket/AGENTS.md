@@ -68,6 +68,16 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **Ollama dayanıklılığı:** `rank_by_relevance` bozuk bir parti için bir kez yeniden
   dener, yine olmazsa o partiyi `ai_score=None` ile döndürür (arama çökmez). Puanlananlar
   önce, puanlanamayanlar özgün sırada sonda gelir; arayüz bunları "—" olarak gösterir.
+- **Parçalama:** `ingest` satır satır parça kaydetmez; `text_utils.split_paragraphs`
+  ile paragraf birleştirir. PDF çıkarımı metni sarar, satır başına parça bir cümleyi
+  10+ kaynağa böler. Yeni kaynak türü eklerken bu fonksiyonu kullanın.
+- **Ollama gömme:** `embed_texts` + `rank_by_embedding` metin üretmeden vektör
+  benzerliğiyle sıralar; akıllı aramanın varsayılan (hızlı) modudur. Üretim yapan
+  `rank_by_relevance` yavaştır, alternatif olarak kalır. Yeni Ollama `/api/embed`
+  toplu kabul eder, eskisi `/api/embeddings` tek tek.
+- **İlgi süzgeci:** `filter_by_score` eşiğin altındaki ve puanlanamayan sonuçları
+  eler; varsayılan 3 (`settings["ai_min_score"]`). 0 puanlı ilgisiz parçalar
+  listeyi doldurup asıl kaynağı gizlediği için süzülür.
 - **Metin kaynakları:** `text_sources.py` dış ağa yalnızca `requests` ile çıkar; dosya
   yazmaz. Web getirme `http`/`https` dışını reddeder ve yanıt boyutunu sınırlar.
   `app.py` içindeki `InputSourceDialog` ağır işleri (OCR, indirme) arka plan iş

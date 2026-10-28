@@ -346,6 +346,104 @@ def rank_by_relevance(question, results, model="qwen2.5:3b", host="http://localh
     return scored + unscored
 
 
+def embed_texts(texts, model="nomic-embed-text", host="http://localhost:11434",
+                read_timeout=DEFAULT_READ_TIMEOUT, progress=None):
+    """Metinleri vektöre çevirir (Ollama `/api/embed`).
+
+    Gömme üretimi, metin üretiminden çok daha hızlıdır: model tek geçişte
+    vektör verir, token token yanıt üretmez. Bu yüzden anlamsal sıralama için
+    puanlama istemek yerine benzerlik ölçmek tercih edilir.
+
+    Yeni Ollama sürümleri `/api/embed` ile toplu girdi kabul eder; eski
+    sürümlerde `/api/embeddings` tek tek çağrılır.
+    """
+    texts = list(texts)
+    if not texts:
+        return []
+    url = f"{host.rstrip('/')}/api/embed"
+    try:
+        try:
+            response = requests.post(
+                url, json={"model": model, "input": texts},
+                timeout=(CONNECT_TIMEOUT, read_timeout),
+            )
+            response.raise_for_status()
+            vectors = response.json().get("embeddings")
+            if not vectors:
+                raise OllamaError("Gömme modeli vektör döndürmedi.")
+            if progress:
+                progress(len(texts))
+            return vectors
+        except requests.exceptions.HTTPError as exc:
+            if getattr(exc.response, "status_code", None) not in (400, 404):
+                raise
+            # Eski Ollama: tek tek /api/embeddings
+            legacy = f"{host.rstrip('/')}/api/embeddings"
+            vectors = []
+            for i, text in enumerate(texts, 1):
+                resp = requests.post(legacy, json={"model": model, "prompt": text},
+                                     timeout=(CONNECT_TIMEOUT, read_timeout))
+                resp.raise_for_status()
+                vectors.append(resp.json().get("embedding") or [])
+                if progress:
+                    progress(i)
+            if not any(vectors):
+                raise OllamaError("Gömme modeli vektör döndürmedi.")
+            return vectors
+    except OllamaError:
+        raise
+    except Exception as exc:
+        raise _classify(exc, host, model, read_timeout) from exc
+
+
+def _cosine(a, b):
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def rank_by_embedding(question, results, model="nomic-embed-text",
+                      host="http://localhost:11434", max_candidates=60,
+                      read_timeout=DEFAULT_READ_TIMEOUT, progress=None):
+    """Adayları gömme benzerliğine göre sıralar (üretim yapmadan, hızlı).
+
+    Metin üretimi yerine vektör karşılaştırması kullanıldığı için tek bir
+    istek yeter ve yanıt saniyeler içinde gelir. `ai_score` 0-10 aralığına
+    ölçeklenmiş kosinüs benzerliğidir.
+    """
+    if not results:
+        return []
+    candidates = results[:max_candidates]
+    vectors = embed_texts([question] + [r["text"][:2000] for r in candidates],
+                          model=model, host=host, read_timeout=read_timeout,
+                          progress=progress)
+    if len(vectors) < len(candidates) + 1:
+        raise OllamaError("Gömme sayısı aday sayısıyla uyuşmuyor.")
+    question_vector = vectors[0]
+    scored = []
+    for r, vector in zip(candidates, vectors[1:]):
+        similarity = _cosine(question_vector, vector)
+        item = dict(r)
+        item["ai_score"] = round(max(0.0, min(1.0, similarity)) * 10, 1)
+        scored.append(item)
+    scored.sort(key=lambda r: r["ai_score"], reverse=True)
+    return scored
+
+
+def filter_by_score(results, min_score=3.0):
+    """Puanı eşiğin altında kalan sonuçları eler.
+
+    Akıllı aramada model her adaya bir puan verir; ilgisiz parçalar 0 alır.
+    Bunları göstermek listeyi doldurup asıl ilgili kaynağı gizlediği için
+    varsayılan olarak elenir. Puanlanamayan (None) sonuçlar da gösterilmez.
+    """
+    kept = [r for r in results if (r.get("ai_score") or 0.0) >= min_score]
+    return kept
+
+
 def explain_with_ollama(question, results, model="qwen2.5:3b", host="http://localhost:11434",
                         mode="Otomatik", read_timeout=DEFAULT_READ_TIMEOUT,
                         keep_alive=DEFAULT_KEEP_ALIVE, progress=None):

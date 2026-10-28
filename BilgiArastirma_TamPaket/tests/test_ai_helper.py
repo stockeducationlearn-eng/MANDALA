@@ -20,10 +20,45 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
     request_count = 0
     last_body = {}
     reject_json_format = False
+    reject_embed = False
     sequence = []
 
     def _json(self, obj):
         return json.dumps(obj).encode("utf-8")
+
+    def _vector(self, text):
+        """Metne bağlı, deterministik bir vektör üretir.
+
+        Testte benzerlik sırası denetlenebilsin diye kelime içerikleri
+        vektöre yansıtılır: aynı kelimeleri paylaşan metinler yakın vektör alır.
+        """
+        words = [w for w in text.lower().split() if w]
+        dims = 8
+        vector = [0.0] * dims
+        for word in words:
+            vector[hash(word) % dims] += 1.0
+        if not any(vector):
+            vector[0] = 1.0
+        return vector
+
+    def _handle_embed(self):
+        payload = type(self).last_body
+        if self.path == "/api/embed":
+            if type(self).reject_embed:
+                self.send_response(404)
+                self.end_headers()
+                return
+            texts = payload.get("input") or []
+            if isinstance(texts, str):
+                texts = [texts]
+            raw = self._json({"embeddings": [self._vector(t) for t in texts]})
+        else:
+            raw = self._json({"embedding": self._vector(payload.get("prompt", ""))})
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
     def do_GET(self):
         if self.path != "/api/tags":
@@ -41,6 +76,9 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         type(self).last_body = json.loads(body or b"{}")
         type(self).request_count += 1
+        if self.path in ("/api/embed", "/api/embeddings"):
+            self._handle_embed()
+            return
         if self.path != "/api/generate":
             self.send_response(404)
             self.end_headers()
@@ -92,6 +130,7 @@ def fake_ollama():
     _OllamaHandler.raw_lines = []
     _OllamaHandler.status, _OllamaHandler.tags = 200, []
     _OllamaHandler.reject_json_format = False
+    _OllamaHandler.reject_embed = False
     _OllamaHandler.sequence = []
     _OllamaHandler.request_count = 0
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _OllamaHandler)
@@ -128,6 +167,10 @@ def fake_ollama():
         def reject_format(self):
             """Eski Ollama gibi davran: format alanını 400 ile reddet."""
             _OllamaHandler.reject_json_format = True
+
+        def legacy_embed_only(self):
+            """/api/embed'i 404 yap; yalnızca /api/embeddings çalışsın."""
+            _OllamaHandler.reject_embed = True
 
         def set_sequence(self, responses):
             """Sırayla farklı yanıtlar döndür (son yanıt tekrarlanır)."""
@@ -427,3 +470,58 @@ def test_unscored_results_keep_original_order(fake_ollama):
                                          host=fake_ollama.host, batch_size=1)
     assert [r["document_name"] for r in ranked] == ["d0", "d1", "d2"]
     assert all(r["ai_score"] is None for r in ranked)
+
+
+# --- Gömme (embedding) ile hızlı sıralama ---------------------------------
+
+def test_embed_texts_uses_batch_endpoint(fake_ollama):
+    vectors = ai_helper.embed_texts(["kıdem tazminatı", "şeker hastalığı"],
+                                    model="test", host=fake_ollama.host)
+    assert len(vectors) == 2
+    assert fake_ollama.request_count() == 1          # tek toplu istek
+    assert fake_ollama.last_payload().get("input")
+
+
+def test_rank_by_embedding_orders_by_similarity(fake_ollama):
+    """Soruyla kelime paylaşan parça, paylaşmayanın önüne geçmeli."""
+    results = [
+        {"document_name": "alakasiz", "location": "1", "text": "şeker hastalığı tedavisi"},
+        {"document_name": "ilgili", "location": "2", "text": "kıdem tazminatı hak"},
+    ]
+    ranked = ai_helper.rank_by_embedding("kıdem tazminatı", results,
+                                         model="test", host=fake_ollama.host)
+    assert ranked[0]["document_name"] == "ilgili"
+    assert ranked[0]["ai_score"] > ranked[1]["ai_score"]
+
+
+def test_rank_by_embedding_reports_progress(fake_ollama):
+    seen = []
+    ai_helper.rank_by_embedding("soru", _candidates(3), model="test",
+                                host=fake_ollama.host, progress=seen.append)
+    assert seen == [4]   # soru + 3 aday tek istekte vektörlendi
+
+
+def test_rank_by_embedding_empty_results(fake_ollama):
+    assert ai_helper.rank_by_embedding("s", [], model="test", host=fake_ollama.host) == []
+
+
+def test_embed_falls_back_to_legacy_endpoint(fake_ollama):
+    """Eski Ollama /api/embed yerine tek tek /api/embeddings bekler."""
+    fake_ollama.legacy_embed_only()
+    vectors = ai_helper.embed_texts(["bir", "iki"], model="test", host=fake_ollama.host)
+    assert len(vectors) == 2
+    assert fake_ollama.request_count() == 3   # 1 başarısız + 2 tek tek
+
+
+# --- Puan süzgeci ---------------------------------------------------------
+
+def test_filter_by_score_drops_zero_and_unscored():
+    results = [{"ai_score": 9.0}, {"ai_score": 3.0}, {"ai_score": 0.0},
+               {"ai_score": None}, {"ai_score": 2.9}]
+    kept = ai_helper.filter_by_score(results, min_score=3.0)
+    assert [r["ai_score"] for r in kept] == [9.0, 3.0]
+
+
+def test_filter_by_score_default_hides_zeros():
+    results = [{"ai_score": 0.0}, {"ai_score": 7.0}]
+    assert [r["ai_score"] for r in ai_helper.filter_by_score(results)] == [7.0]
