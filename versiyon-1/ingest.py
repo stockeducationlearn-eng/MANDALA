@@ -5,6 +5,7 @@ import fitz
 from docx import Document as DocxDocument
 import pytesseract
 from database import db, add_chunks
+from text_utils import split_paragraphs, _vocabulary
 
 ROOT = Path(__file__).resolve().parent
 DOC_DIR = ROOT / "documents"
@@ -38,6 +39,7 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
     configure_tesseract(tesseract_path)
     if ext == ".pdf":
         with fitz.open(path) as doc:
+            pages = []
             for i, page in enumerate(doc, 1):
                 text = page.get_text("text").strip()
                 if len(text) < 20 and tesseract_path and Path(tesseract_path).exists():
@@ -47,7 +49,15 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
                     except Exception as exc:
                         text = text or f"[Sayfa OCR hatası: {exc}]"
                 if text:
-                    chunks.append((f"PDF sayfa {i}", text))
+                    pages.append((i, text))
+            # Kelime onarımı belgenin tümüne bakılarak yapılır; tek sayfa
+            # sözlüğü seyrek kalır ve satır sonu bölünmelerini kaçırır.
+            vocab = _vocabulary("\n".join(t for _, t in pages))
+            for i, text in pages:
+                paras = split_paragraphs(text, vocabulary=vocab)
+                for j, para in enumerate(paras, 1):
+                    loc = f"PDF sayfa {i}" if len(paras) == 1 else f"PDF sayfa {i}, paragraf {j}"
+                    chunks.append((loc, para))
     elif ext == ".docx":
         doc = DocxDocument(path)
         for i, para in enumerate(doc.paragraphs, 1):
@@ -60,9 +70,8 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
                     chunks.append((f"Tablo {ti}, satır {ri}", txt))
     elif ext == ".txt":
         text = path.read_text(encoding="utf-8", errors="replace")
-        for i, line in enumerate(text.splitlines(), 1):
-            if line.strip():
-                chunks.append((f"Satır {i}", line.strip()))
+        for i, para in enumerate(split_paragraphs(text), 1):
+            chunks.append((f"Paragraf {i}", para))
     elif ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
         if tesseract_path and Path(tesseract_path).exists():
             chunks.append(("Görsel", ocr_pil(Image.open(path), ocr_lang)))
@@ -92,3 +101,57 @@ def add_file(source_path, tesseract_path="", ocr_lang="tur+eng"):
         doc_id = cur.lastrowid
         add_chunks(con, doc_id, extracted)
     return doc_id, f"Arşive eklendi; {len(extracted)} metin bölümü çıkarıldı."
+
+
+def _store_text(name, file_type, source_text, origin, digest):
+    """Metni arşive yazar ve indeksler.
+
+    `stored_path` her zaman yerel `.txt` kopyasını tutar; `source_url` ise
+    metnin alındığı adresi (varsa) saklar. Böylece kaynak silinebilir ve
+    `Kaynak dosyayı aç` orijinal adresi açabilir.
+    """
+    dest = DOC_DIR / f"{digest[:12]}_{safe_name(name)}.txt"
+    if not dest.exists():
+        dest.write_text(source_text, encoding="utf-8")
+    # Satır satır kaydetmek yerine paragraf birleştirilir: satır başına parça,
+    # bir cümleyi 10+ ayrı kaynağa böler ve aramayı zayıflatır.
+    paragraphs = split_paragraphs(source_text)
+    if not paragraphs:
+        paragraphs = [source_text.strip() or "(boş)"]
+    lines = [(f"Paragraf {i}", para) for i, para in enumerate(paragraphs, 1)]
+    with db() as con:
+        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status, source_url)
+            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?)""",
+            (name, str(dest), file_type, digest, len(source_text),
+             "Metin çıkarıldı" if source_text.strip() else "Metin bulunamadı", origin or ""))
+        doc_id = cur.lastrowid
+        add_chunks(con, doc_id, lines)
+    return doc_id, f"Arşive eklendi; {len(lines)} metin bölümü çıkarıldı."
+
+
+def add_url(url, timeout=None):
+    """Bir web adresinin metnini indirip arşive kaynak olarak ekler."""
+    from text_sources import fetch_url_text
+    text = fetch_url_text(url) if timeout is None else fetch_url_text(url, timeout=timeout)
+    if not text.strip():
+        raise ValueError("Sayfada okunabilir metin bulunamadı.")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with db() as con:
+        old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
+        if old:
+            return old["id"], "Bu sayfa daha önce eklenmiş; mevcut kayıt kullanıldı."
+    clean = url.strip()
+    name = re.sub(r"^https?://", "", clean).split("?")[0][:80] or "web_sayfasi"
+    return _store_text(name, "web", text, clean, digest)
+
+
+def add_text(text, name="Serbest metin"):
+    """Kullanıcının yapıştırdığı/ekrandan gelen metni arşive ekler."""
+    if not text or not text.strip():
+        raise ValueError("Eklenecek metin boş.")
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with db() as con:
+        old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
+        if old:
+            return old["id"], "Bu metin daha önce eklenmiş; mevcut kayıt kullanıldı."
+    return _store_text(name, "text", text, "", digest)

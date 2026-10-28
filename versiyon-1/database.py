@@ -1,7 +1,6 @@
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
-from datetime import datetime
 
 from text_utils import tr_fold_for_search
 
@@ -94,6 +93,14 @@ def init_db():
         if _fts5_available():
             _setup_fts(con)
             _migrate_fts(con)
+        _migrate_schema(con)
+
+
+def _migrate_schema(con):
+    """Eski veritabanlarına eksik sütunları ekler."""
+    cols = {row["name"] for row in con.execute("PRAGMA table_info(documents)")}
+    if "source_url" not in cols:
+        con.execute("ALTER TABLE documents ADD COLUMN source_url TEXT DEFAULT ''")
 
 def _setup_fts(con):
     """Türkçe katlanmış metin üzerinde FTS5 indeksi.

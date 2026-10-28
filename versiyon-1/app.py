@@ -6,8 +6,10 @@ import threading, os, json, sys, subprocess, traceback
 import database
 from database import db
 from ingest import add_file
-from search_engine import search
-from ai_helper import explain_with_ollama
+from search_engine import (search, MATCH_CHOICES, match_from_label,
+                           label_from_settings)
+from ai_helper import (explain_with_ollama, expand_query, rank_by_relevance,
+                       check_ollama, OllamaError, rank_by_embedding, filter_by_score)
 from exporter import export_csv, export_results, backup_project
 
 ROOT = Path(__file__).resolve().parent
@@ -35,12 +37,18 @@ class App(tk.Tk):
     def load_settings(self):
         defaults = {"tesseract_path": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                     "ocr_lang": "tur+eng", "ollama_model": "qwen2.5:3b",
-                    "all_terms": False, "turkish_sensitive": False}
+                    "ollama_timeout": 300, "ollama_keep_alive": "30m",
+                    "all_terms": False, "min_coverage": 0.0, "turkish_sensitive": False}
         if SETTINGS.exists():
             try:
                 defaults.update(json.loads(SETTINGS.read_text(encoding="utf-8")))
             except Exception:
                 pass
+        # Eski sürümde yalnızca "all_terms" vardı. Onay kutusu kaldırıldığı için
+        # eski True değeri, boş sonuç veren %100 yerine önerilen %60'a taşınır.
+        if "min_coverage" not in defaults or (
+                defaults["all_terms"] and not defaults.get("min_coverage")):
+            defaults["min_coverage"] = 0.6 if defaults.get("all_terms") else 0.0
         return defaults
 
     def save_settings_file(self):
@@ -82,13 +90,19 @@ class App(tk.Tk):
         self.history.bind("<<ListboxSelect>>", self.open_history)
 
         ttk.Label(right, text="SORU / ANAHTAR KELİMELER", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        qrow = ttk.Frame(right)
-        qrow.pack(fill="x", pady=5)
-        self.query_var = tk.StringVar()
-        self.query_entry = ttk.Entry(qrow, textvariable=self.query_var, font=("Segoe UI", 11))
+        qbox = ttk.Frame(right)
+        qbox.pack(fill="x", pady=5)
+        self.query_entry = tk.Text(qbox, height=3, wrap="word", font=("Segoe UI", 11))
         self.query_entry.pack(side="left", fill="x", expand=True)
-        self.query_entry.bind("<Return>", lambda _e: self.run_search())
-        ttk.Button(qrow, text="Ara", command=self.run_search).pack(side="left", padx=(6, 0))
+        self.query_entry.bind("<Control-Return>", lambda _e: (self.run_search(), "break")[1])
+        qbtns = ttk.Frame(qbox)
+        qbtns.pack(side="left", padx=(6, 0), fill="y")
+        ttk.Button(qbtns, text="Ara", command=self.run_search).pack(fill="x")
+        ttk.Button(qbtns, text="Girdi kaynağı…", command=self.open_input_dialog).pack(fill="x", pady=(4, 0))
+        ttk.Button(qbtns, text="Temizle", command=lambda: self.query_entry.delete("1.0", "end")).pack(fill="x", pady=(4, 0))
+        ttk.Label(right, text="Çok satırlı giriş: Ctrl+Enter ile arar. Girdiyi elle yazabilir, bir dökümandan "
+                              "paragraf seçebilir, resim/ekran görüntüsünden OCR ile ya da web adresinden alabilirsiniz.",
+                  foreground="#555", wraplength=900, justify="left").pack(anchor="w")
         mode_row = ttk.Frame(right)
         mode_row.pack(fill="x", pady=(0, 4))
         ttk.Label(mode_row, text="Araştırma türü:").pack(side="left", padx=(0, 4))
@@ -97,11 +111,20 @@ class App(tk.Tk):
                                        values=("Otomatik", "Çıkmış soru", "Paragraf / metin", "Kavram"))
         self.mode_combo.pack(side="left", padx=(0, 6))
         ttk.Label(mode_row, text="Soru/seçenek, paragraf veya tek kavram girebilirsiniz.", foreground="#555").pack(side="left", padx=8)
-        self.all_terms_var = tk.BooleanVar(value=bool(self.settings.get("all_terms", False)))
-        ttk.Checkbutton(qrow, text="Tüm kelimeler eşleşsin", variable=self.all_terms_var).pack(side="left", padx=8)
+        self.match_var = tk.StringVar(value=label_from_settings(
+            bool(self.settings.get("all_terms", False)),
+            self.settings.get("min_coverage", 0.0)))
+        ttk.Label(mode_row, text="Eşleşme:").pack(side="left", padx=(10, 2))
+        self.match_combo = ttk.Combobox(mode_row, textvariable=self.match_var, state="readonly", width=14,
+                                        values=[name for name, _a, _c in MATCH_CHOICES])
+        self.match_combo.pack(side="left")
+        self.match_combo.bind("<<ComboboxSelected>>", self.on_match_change)
         self.turkish_sensitive_var = tk.BooleanVar(value=bool(self.settings.get("turkish_sensitive", False)))
-        ttk.Checkbutton(qrow, text="Türkçe karakter duyarlı", variable=self.turkish_sensitive_var,
+        ttk.Checkbutton(mode_row, text="Türkçe karakter duyarlı", variable=self.turkish_sensitive_var,
                         command=self.on_turkish_toggle).pack(side="left", padx=8)
+        self.fast_smart_var = tk.BooleanVar(value=bool(self.settings.get("ai_fast_mode", True)))
+        ttk.Checkbutton(mode_row, text="Hızlı akıllı arama (gömme)", variable=self.fast_smart_var,
+                        command=self.on_fast_toggle).pack(side="left", padx=8)
         self.status_var = tk.StringVar(value="Hazır — önce kaynak dosyalarınızı ekleyin.")
         ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(2, 5))
 
@@ -119,6 +142,7 @@ class App(tk.Tk):
         action = ttk.Frame(right)
         action.pack(fill="x", pady=4)
         ttk.Button(action, text="Kaynaklardan konu notu oluştur (Ollama)", command=self.ai_explain).pack(side="left")
+        ttk.Button(action, text="Akıllı ara (Ollama)", command=self.ai_smart_search).pack(side="left", padx=5)
         ttk.Button(action, text="Konu notunu arşivle", command=self.save_research_note).pack(side="left", padx=5)
         ttk.Button(action, text="PDF raporu", command=lambda: self.export_report("pdf")).pack(side="left", padx=3)
         ttk.Button(action, text="Word raporu", command=lambda: self.export_report("docx")).pack(side="left", padx=3)
@@ -136,6 +160,27 @@ class App(tk.Tk):
         self.note_entry = ttk.Entry(note_row)
         self.note_entry.pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(note_row, text="Notu kaydet", command=self.save_note).pack(side="right")
+
+    def get_query(self):
+        """Çok satırlı girdi kutusundaki sorguyu döndürür."""
+        return self.query_entry.get("1.0", "end").strip()
+
+    def set_query(self, text):
+        self.query_entry.delete("1.0", "end")
+        self.query_entry.insert("1.0", text or "")
+
+    def open_input_dialog(self):
+        """Girdiyi farklı kaynaklardan alma penceresi."""
+        InputSourceDialog(self)
+
+    def _append_query(self, text, replace=False):
+        if not text:
+            return
+        if replace or not self.get_query():
+            self.set_query(text)
+        else:
+            self.query_entry.insert("end", "\n" + text)
+        self.status_var.set("Girdi güncellendi.")
 
     def add_sources(self):
         paths = filedialog.askopenfilenames(
@@ -185,22 +230,24 @@ class App(tk.Tk):
         self.status_var.set("Kaynak silindi.")
 
     def run_search(self):
-        q = self.query_var.get().strip()
+        q = self.get_query()
         if not q:
             messagebox.showwarning("Arama", "Bir soru veya anahtar kelime yazın.")
             return
         self.status_var.set("Aranıyor…")
         self.result_tree.delete(*self.result_tree.get_children())
         self.detail.delete("1.0", "end")
-        self.all_terms_var_value = self.all_terms_var.get()
+        self.all_terms_var_value, self.min_coverage_value = match_from_label(self.match_var.get())
         self.ignore_turkish_case_value = not self.turkish_sensitive_var.get()
         def worker():
             try:
                 sid, results = search(q, all_terms=self.all_terms_var_value,
+                                      min_coverage=self.min_coverage_value,
                                       ignore_turkish_case=self.ignore_turkish_case_value)
                 self.after(0, lambda: self.finish_search(sid, results))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Arama hatası", str(exc)))
+                err = str(exc)
+                self.after(0, lambda: messagebox.showerror("Arama hatası", err))
                 self.after(0, lambda: self.status_var.set("Arama başarısız."))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -244,19 +291,160 @@ class App(tk.Tk):
             con.commit()
         self.status_var.set("Not veritabanına kaydedildi.")
 
+    def ollama_options(self):
+        """Ayarlardan Ollama zaman aşımı ve keep_alive değerlerini üretir."""
+        try:
+            timeout = int(self.settings.get("ollama_timeout", 300))
+        except (TypeError, ValueError):
+            timeout = 300
+        return {"read_timeout": max(30, timeout),
+                "keep_alive": self.settings.get("ollama_keep_alive", "30m"),
+                "host": self.settings.get("ollama_host", "http://localhost:11434")}
+
+    def ai_smart_search(self):
+        """Ollama ile sorguyu genişletip adayları anlamsal ilgiye göre sıralar."""
+        q = self.get_query()
+        if not q:
+            messagebox.showwarning("Akıllı arama", "Bir soru veya anahtar kelime yazın.")
+            return
+        model = self.settings.get("ollama_model", "qwen2.5:3b")
+        embed_model = self.settings.get("ollama_embed_model", "nomic-embed-text")
+        fast = bool(self.fast_smart_var.get())
+        try:
+            min_score = float(self.settings.get("ai_min_score", 3))
+        except (TypeError, ValueError):
+            min_score = 3.0
+        opts = self.ollama_options()
+        self.status_var.set("Akıllı arama: Ollama kontrol ediliyor…")
+        self.result_tree.delete(*self.result_tree.get_children())
+        self.detail.delete("1.0", "end")
+        ignore_case = not self.turkish_sensitive_var.get()
+
+        def worker():
+            try:
+                # Uzun bir isteğe başlamadan önce hızlı ön kontrol: sunucu ayakta mı,
+                # model yüklü mü? Böylece kullanıcı dakikalarca bekletilmez.
+                # Hızlı modda metin üretilmediği için üretim modeli aranmaz.
+                needed = embed_model if fast else model
+                status = check_ollama(model=needed, host=opts["host"])
+                if not status["ok"] or not status["model_present"]:
+                    self.after(0, lambda: messagebox.showerror("Akıllı arama", status["message"]))
+                    self.after(0, lambda: self.status_var.set("Akıllı arama: Ollama hazır değil."))
+                    return
+                concepts, warning, warnings = [], "", []
+                if not fast:
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama: {model} sorudan kavramlar çıkarıyor…"))
+                    try:
+                        expanded = expand_query(q, model=model, **opts)
+                        if expanded and expanded["kavramlar"]:
+                            concepts = expanded["kavramlar"]
+                    except OllamaError as exc:
+                        warning = f"Sorgu genişletilemedi ({exc}); özgün sorguyla devam edildi. "
+                # Geniş aday havuzu: özgün sorgu + modelin çıkardığı kavramlar.
+                merged, seen = [], set()
+                for probe in [q, " ".join(concepts)]:
+                    if not probe.strip():
+                        continue
+                    _, found = search(probe, ignore_turkish_case=ignore_case)
+                    for r in found:
+                        if r["chunk_id"] not in seen:
+                            seen.add(r["chunk_id"])
+                            merged.append(r)
+                if not merged:
+                    self.after(0, lambda: self.finish_smart_search([], warning, concepts))
+                    return
+
+                def report(done, total):
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama: {model} ilgi puanlıyor… {done}/{total}"))
+
+                def warn(text):
+                    warnings.append(text)
+
+                if fast:
+                    # Gömme ile sıralama: metin üretilmez, vektör karşılaştırılır.
+                    # Bu yüzden yavaş bilgisayarlarda bile saniyeler sürer.
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama (hızlı): {embed_model} benzerlik hesaplıyor…"))
+                    ranked = rank_by_embedding(
+                        q, merged, model=embed_model, host=opts.get("host", "http://localhost:11434"),
+                        read_timeout=opts["read_timeout"],
+                        progress=lambda n: self.after(0, lambda: self.status_var.set(
+                            f"Akıllı arama (hızlı): {n} parça vektörlendi…")))
+                else:
+                    ranked = rank_by_relevance(q, merged, model=model, progress=report,
+                                               on_warning=warn, **opts)
+                if warnings:
+                    warning += " ".join(warnings) + " "
+                # 0 puanlı ilgisiz parçalar listeyi doldurup asıl kaynağı gizler.
+                before = len(ranked)
+                ranked = filter_by_score(ranked, min_score=min_score)
+                if before and not ranked:
+                    warning += "Hiçbir parça ilgi eşiğini geçemedi; eşiği düşürmeyi deneyin. "
+                self.after(0, lambda: self.finish_smart_search(ranked, warning, concepts))
+            except OllamaError as exc:
+                msg = str(exc)
+                self.after(0, lambda: messagebox.showerror("Akıllı arama", msg))
+                self.after(0, lambda: self.status_var.set("Akıllı arama başarısız."))
+            except Exception as exc:
+                err = "Beklenmeyen hata: " + str(exc)
+                self.after(0, lambda: messagebox.showerror("Akıllı arama", err))
+                self.after(0, lambda: self.status_var.set("Akıllı arama başarısız."))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_smart_search(self, results, warning, concepts):
+        self.last_results = results
+        # Akıllı arama sonuçları da normal arama gibi kaydedilir; böylece not
+        # ekleme ve geçmiş çalışmaya devam eder.
+        with db() as con:
+            cur = con.execute("INSERT INTO searches(query, created_at) VALUES (?, datetime('now','localtime'))",
+                              ("[Akıllı] " + (self.get_query() or ""),))
+            self.last_search_id = cur.lastrowid
+            con.executemany("INSERT INTO results(search_id, chunk_id, score) VALUES (?, ?, ?)",
+                            [(self.last_search_id, r["chunk_id"], r.get("ai_score") or 0.0) for r in results])
+            con.commit()
+        unscored = 0
+        for i, r in enumerate(results):
+            preview = " ".join(r["text"].split())
+            if len(preview) > 300:
+                preview = preview[:300] + "…"
+            score = r.get("ai_score")
+            if score is None:
+                unscored += 1
+                label = "—"
+            else:
+                label = f"{score:.0f}"
+            self.result_tree.insert("", "end", iid=str(i),
+                values=(r["document_name"], r["location"], label, preview))
+        note = f" ({', '.join(concepts)})" if concepts else ""
+        extra = f" {unscored} parça puanlanamadı." if unscored else ""
+        self.status_var.set(warning + f"{len(results)} bölüm anlamsal ilgiye göre sıralandı{note}.{extra}")
+        self.refresh_history()
+
     def ai_explain(self):
         if not self.last_results:
             messagebox.showinfo("Açıklama", "Önce arama yapın ve ilgili kaynakları bulun.")
             return
         model = self.settings.get("ollama_model", "qwen2.5:3b")
-        q = self.query_var.get().strip()
+        opts = self.ollama_options()
+        q = self.get_query()
         self.status_var.set(f"Yerel model yanıtı bekleniyor: {model}")
         def worker():
             try:
-                answer = explain_with_ollama(q, self.last_results, model=model, mode=self.mode_var.get())
+                status = check_ollama(model=model)
+                if not status["ok"] or not status["model_present"]:
+                    answer = status["message"]
+                else:
+                    def report(chars):
+                        self.after(0, lambda: self.status_var.set(
+                            f"Yerel model yanıt üretiyor: {model} ({chars} karakter)"))
+                    answer = explain_with_ollama(q, self.last_results, model=model,
+                                                 mode=self.mode_var.get(), progress=report, **opts)
+            except OllamaError as exc:
+                answer = str(exc)
             except Exception as exc:
-                answer = ("Ollama'ya bağlanılamadı. Ollama kurulu, çalışır ve model indirilmiş olmalı.\n\n"
-                          "Kurulum komutu örneği: ollama pull qwen2.5:3b\n\nTeknik ayrıntı: " + str(exc))
+                answer = "Beklenmeyen hata: " + str(exc)
             self.after(0, lambda: self.show_ai_answer(answer))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -268,7 +456,7 @@ class App(tk.Tk):
 
     def save_research_note(self):
         body = self.detail.get("1.0", "end").strip()
-        query = self.query_var.get().strip()
+        query = self.get_query()
         if not body or not query:
             messagebox.showinfo("Konu notunu arşivle", "Önce arama yapıp Ollama ile bir konu notu oluşturun.")
             return
@@ -290,7 +478,7 @@ class App(tk.Tk):
         if not self.last_results and not self.detail.get("1.0", "end").strip():
             messagebox.showinfo("Rapor oluştur", "Önce arama yapın veya konu notu oluşturun.")
             return
-        query = self.query_var.get().strip() or "Konu_Notu"
+        query = self.get_query() or "Konu_Notu"
         try:
             path = export_results(self.last_results, fmt=fmt, query=query,
                                   mode=self.mode_var.get(),
@@ -309,9 +497,13 @@ class App(tk.Tk):
     def open_source(self):
         sel = self.result_tree.selection()
         if not sel: return
-        path = self.last_results[int(sel[0])]["stored_path"]
+        row = self.last_results[int(sel[0])]
+        url = (row.get("source_url") or "").strip()
+        path = url or row["stored_path"]
         try:
-            if sys.platform.startswith("win"):
+            if url:
+                self._open_url(url)
+            elif sys.platform.startswith("win"):
                 os.startfile(path)
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", path])
@@ -320,11 +512,32 @@ class App(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Dosya açılamadı", str(exc))
 
+    def _open_url(self, url):
+        import webbrowser
+        if not webbrowser.open(url):
+            raise RuntimeError("Tarayıcı açılamadı: " + url)
+
     def on_turkish_toggle(self):
         self.settings["turkish_sensitive"] = bool(self.turkish_sensitive_var.get())
         self.save_settings_file()
         self.status_var.set("Arama Türkçe karakter duyarlı." if self.turkish_sensitive_var.get()
                             else "Arama Türkçe karakter duyarsız (ç/ğ/ı/ş... eşitlenir).")
+
+    def on_fast_toggle(self):
+        self.settings["ai_fast_mode"] = bool(self.fast_smart_var.get())
+        self.save_settings_file()
+        self.status_var.set("Akıllı arama hızlı modda (gömme benzerliği)." if self.fast_smart_var.get()
+                            else "Akıllı arama model puanlamasıyla (yavaş, daha ayrıntılı).")
+
+    def on_match_change(self):
+        all_terms, coverage = match_from_label(self.match_var.get())
+        self.settings["all_terms"] = bool(all_terms)
+        self.settings["min_coverage"] = coverage
+        self.save_settings_file()
+        if all_terms:
+            self.status_var.set(f"Eşleşme: terimlerin en az %{int(coverage * 100)} kadarı aranır.")
+        else:
+            self.status_var.set("Eşleşme: terimlerden herhangi biri yeterli.")
 
     def refresh_history(self):
         self.history.delete(0, "end")
@@ -340,7 +553,7 @@ class App(tk.Tk):
         with db() as con:
             row = con.execute("SELECT query FROM searches WHERE id=?", (search_id,)).fetchone()
         if row:
-            self.query_var.set(row["query"])
+            self.set_query(row["query"])
             self.run_search()
 
     def backup(self):
@@ -353,7 +566,7 @@ class App(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("Ayarlar")
-        win.geometry("720x330")
+        win.geometry("720x560")
         win.transient(self)
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
@@ -367,13 +580,37 @@ class App(tk.Tk):
         ttk.Label(frm, text="Ollama model adı:").grid(row=4, column=0, sticky="w", pady=(10, 2))
         model = tk.StringVar(value=self.settings.get("ollama_model", "qwen2.5:3b"))
         ttk.Entry(frm, textvariable=model, width=30).grid(row=5, column=0, sticky="w")
+        ttk.Label(frm, text="Ollama yanıt süresi (saniye, en az 30):").grid(row=6, column=0, sticky="w", pady=(10, 2))
+        timeout = tk.StringVar(value=str(self.settings.get("ollama_timeout", 300)))
+        ttk.Entry(frm, textvariable=timeout, width=10).grid(row=7, column=0, sticky="w")
+        ttk.Label(frm, text="Yavaş bilgisayarlarda model uzun süre yanıt üretmezse bu değeri artırın.",
+                  foreground="#555").grid(row=8, column=0, sticky="w")
+        ttk.Label(frm, text="Gömme modeli (hızlı akıllı arama için, ör. nomic-embed-text):").grid(
+            row=9, column=0, sticky="w", pady=(10, 2))
+        embed = tk.StringVar(value=self.settings.get("ollama_embed_model", "nomic-embed-text"))
+        ttk.Entry(frm, textvariable=embed, width=30).grid(row=10, column=0, sticky="w")
+        ttk.Label(frm, text="En düşük ilgi puanı (0-10 arası; altındaki sonuçlar gizlenir):").grid(
+            row=11, column=0, sticky="w", pady=(10, 2))
+        minscore = tk.StringVar(value=str(self.settings.get("ai_min_score", 3)))
+        ttk.Entry(frm, textvariable=minscore, width=10).grid(row=12, column=0, sticky="w")
         def save():
+            try:
+                secs = max(30, int(float(timeout.get().strip())))
+            except (TypeError, ValueError):
+                secs = 300
+            try:
+                min_ai = max(0.0, min(10.0, float(minscore.get().strip().replace(",", "."))))
+            except (TypeError, ValueError):
+                min_ai = 3.0
             self.settings.update({"tesseract_path": tess.get().strip(), "ocr_lang": lang.get().strip() or "tur+eng",
-                                  "ollama_model": model.get().strip() or "qwen2.5:3b"})
+                                  "ollama_model": model.get().strip() or "qwen2.5:3b",
+                                  "ollama_embed_model": embed.get().strip() or "nomic-embed-text",
+                                  "ai_min_score": min_ai,
+                                  "ollama_timeout": secs})
             self.save_settings_file()
             win.destroy()
             messagebox.showinfo("Ayarlar", "Ayarlar kaydedildi.")
-        ttk.Button(frm, text="Kaydet", command=save).grid(row=6, column=0, sticky="w", pady=12)
+        ttk.Button(frm, text="Kaydet", command=save).grid(row=13, column=0, sticky="w", pady=12)
 
     def on_close(self):
         try:
@@ -382,6 +619,306 @@ class App(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+class InputSourceDialog(tk.Toplevel):
+    """Girdiyi dökümandan, resimden, ekrandan veya web adresinden alan pencere."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.title("Girdi kaynağı")
+        self.geometry("820x560")
+        self.transient(app)
+        self.grab_set()
+        self.result = ""
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        notebook.add(self._tab_paragraph(notebook), text="Dökümandan paragraf")
+        notebook.add(self._tab_image(notebook), text="Resim (OCR)")
+        notebook.add(self._tab_screen(notebook), text="Ekran görüntüsü")
+        notebook.add(self._tab_web(notebook), text="Web adresi")
+        bar = ttk.Frame(self, padding=(10, 0, 10, 10))
+        bar.pack(fill="x")
+        self.hint = tk.StringVar(value="Seçilen metin arama kutusuna eklenir.")
+        ttk.Label(bar, textvariable=self.hint, foreground="#555").pack(side="left")
+        ttk.Button(bar, text="Kapat", command=self.destroy).pack(side="right")
+
+    def _preview_box(self, parent, height=12):
+        box = tk.Text(parent, height=height, wrap="word", font=("Segoe UI", 10))
+        return box
+
+    def _use_text(self, text, replace=False):
+        if not text or not text.strip():
+            messagebox.showinfo("Girdi kaynağı", "Metin bulunamadı.")
+            return
+        self.app._append_query(text.strip(), replace=replace)
+        self.destroy()
+
+    def _tab_paragraph(self, parent):
+        frame = ttk.Frame(parent, padding=10)
+        top = ttk.Frame(frame)
+        top.pack(fill="x")
+        ttk.Button(top, text="Döküman seç (PDF/DOCX/TXT)", command=self._choose_document).pack(side="left")
+        self.doc_label = tk.StringVar(value="Döküman seçilmedi.")
+        ttk.Label(top, textvariable=self.doc_label, foreground="#555").pack(side="left", padx=8)
+        ttk.Label(frame, text="Paragraf / bölüm seçin:").pack(anchor="w", pady=(10, 2))
+        listbox_frame = ttk.Frame(frame)
+        listbox_frame.pack(fill="both", expand=True)
+        self.para_list = tk.Listbox(listbox_frame, font=("Segoe UI", 10))
+        scroll = ttk.Scrollbar(listbox_frame, orient="vertical", command=self.para_list.yview)
+        self.para_list.configure(yscrollcommand=scroll.set)
+        self.para_list.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+        self.para_list.bind("<<ListboxSelect>>", self._show_paragraph)
+        self.para_blocks = []
+        ttk.Label(frame, text="Seçilen paragraf:").pack(anchor="w", pady=(8, 2))
+        self.para_preview = self._preview_box(frame, height=8)
+        self.para_preview.pack(fill="both", expand=True)
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=6)
+        ttk.Button(btns, text="Arama kutusuna aktar",
+                   command=lambda: self._use_text(self.para_preview.get("1.0", "end"))).pack(side="left")
+        ttk.Button(btns, text="Kaynak olarak arşive ekle",
+                   command=lambda: self._archive(self.para_preview.get("1.0", "end"))).pack(side="left", padx=6)
+        return frame
+
+    def _choose_document(self):
+        path = filedialog.askopenfilename(
+            title="Döküman seç",
+            filetypes=[("Dökümanlar", "*.pdf *.docx *.txt"), ("Tüm dosyalar", "*.*")])
+        if not path:
+            return
+        try:
+            from text_sources import list_paragraphs, preview
+            blocks = list_paragraphs(path)
+        except Exception as exc:
+            messagebox.showerror("Döküman", f"Metin çıkarılamadı:\n{exc}")
+            return
+        if not blocks:
+            messagebox.showinfo("Döküman", "Bu dökümanda metin bulunamadı.")
+            return
+        self.para_blocks = blocks
+        self.para_list.delete(0, "end")
+        for loc, text in blocks:
+            self.para_list.insert("end", f"[{loc}] {preview(text)}")
+        self.doc_label.set(f"{Path(path).name} — {len(blocks)} bölüm")
+
+    def _show_paragraph(self, _event=None):
+        sel = self.para_list.curselection()
+        if not sel:
+            return
+        text = self.para_blocks[sel[0]][1]
+        self.para_preview.delete("1.0", "end")
+        self.para_preview.insert("1.0", text)
+
+    def _tab_image(self, parent):
+        frame = ttk.Frame(parent, padding=10)
+        ttk.Button(frame, text="Resim seç (PNG/JPG/BMP/TIFF)", command=self._choose_image).pack(anchor="w")
+        self.image_label = tk.StringVar(value="Resim seçilmedi. OCR için Tesseract gerekir.")
+        ttk.Label(frame, textvariable=self.image_label, foreground="#555").pack(anchor="w", pady=6)
+        self.image_preview = self._preview_box(frame, height=14)
+        self.image_preview.pack(fill="both", expand=True)
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=6)
+        ttk.Button(btns, text="Arama kutusuna aktar",
+                   command=lambda: self._use_text(self.image_preview.get("1.0", "end"))).pack(side="left")
+        ttk.Button(btns, text="Kaynak olarak arşive ekle",
+                   command=lambda: self._archive(self.image_preview.get("1.0", "end"), "Resim (OCR)")).pack(side="left", padx=6)
+        return frame
+
+    def _choose_image(self):
+        path = filedialog.askopenfilename(
+            title="Resim seç",
+            filetypes=[("Resimler", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("Tüm dosyalar", "*.*")])
+        if not path:
+            return
+        self._run_ocr(lambda: self._image_text(path), self.image_preview, Path(path).name)
+
+    def _image_text(self, path):
+        from text_sources import image_file_text
+        return image_file_text(path, lang=self.app.settings.get("ocr_lang", "tur+eng"),
+                               tesseract_path=self.app.settings.get("tesseract_path", ""))
+
+    def _tab_screen(self, parent):
+        frame = ttk.Frame(parent, padding=10)
+        ttk.Label(frame, text="Ekranın tamamı veya seçtiğiniz bir bölge OCR ile metne çevrilir.",
+                  foreground="#555").pack(anchor="w")
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=6)
+        ttk.Button(btns, text="Tüm ekranı yakala", command=lambda: self._capture(None)).pack(side="left")
+        ttk.Button(btns, text="Bölge seç ve yakala", command=self._capture_region).pack(side="left", padx=6)
+        self.screen_preview = self._preview_box(frame, height=14)
+        self.screen_preview.pack(fill="both", expand=True)
+        btns2 = ttk.Frame(frame)
+        btns2.pack(fill="x", pady=6)
+        ttk.Button(btns2, text="Arama kutusuna aktar",
+                   command=lambda: self._use_text(self.screen_preview.get("1.0", "end"))).pack(side="left")
+        ttk.Button(btns2, text="Kaynak olarak arşive ekle",
+                   command=lambda: self._archive(self.screen_preview.get("1.0", "end"), "Ekran görüntüsü")).pack(side="left", padx=6)
+        return frame
+
+    def _capture_region(self):
+        self.withdraw()
+        self.update()
+        region = RegionSelector(self).select()
+        self.deiconify()
+        if region:
+            self._capture(region)
+
+    def _capture(self, region):
+        self._run_ocr(lambda: self._screen_text(region), self.screen_preview, "ekran görüntüsü")
+
+    def _screen_text(self, region):
+        from text_sources import capture_screen_text
+        return capture_screen_text(lang=self.app.settings.get("ocr_lang", "tur+eng"),
+                                   tesseract_path=self.app.settings.get("tesseract_path", ""),
+                                   region=region)
+
+    def _run_ocr(self, func, target, label):
+        self.hint.set(f"{label}: OCR çalışıyor…")
+        self.configure(cursor="watch")
+        def worker():
+            try:
+                text = func()
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda: self._ocr_failed(err))
+                return
+            self.after(0, lambda: self._ocr_done(text, target, label))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ocr_done(self, text, target, label):
+        self.configure(cursor="")
+        self.hint.set("Seçilen metin arama kutusuna eklenir.")
+        if not text.strip():
+            messagebox.showinfo("OCR", f"{label}: metin bulunamadı.")
+            return
+        target.delete("1.0", "end")
+        target.insert("1.0", text)
+
+    def _ocr_failed(self, message):
+        self.configure(cursor="")
+        self.hint.set("Seçilen metin arama kutusuna eklenir.")
+        messagebox.showerror("OCR hatası", message)
+
+    def _tab_web(self, parent):
+        frame = ttk.Frame(parent, padding=10)
+        row = ttk.Frame(frame)
+        row.pack(fill="x")
+        ttk.Label(row, text="Adres:").pack(side="left")
+        self.url_var = tk.StringVar()
+        entry = ttk.Entry(row, textvariable=self.url_var)
+        entry.pack(side="left", fill="x", expand=True, padx=6)
+        entry.bind("<Return>", lambda _e: self._fetch_url())
+        ttk.Button(row, text="Getir", command=self._fetch_url).pack(side="left")
+        self.web_label = tk.StringVar(value="http:// veya https:// ile başlayan bir adres girin.")
+        ttk.Label(frame, textvariable=self.web_label, foreground="#555").pack(anchor="w", pady=6)
+        self.web_preview = self._preview_box(frame, height=14)
+        self.web_preview.pack(fill="both", expand=True)
+        btns = ttk.Frame(frame)
+        btns.pack(fill="x", pady=6)
+        ttk.Button(btns, text="Arama kutusuna aktar",
+                   command=lambda: self._use_text(self.web_preview.get("1.0", "end"))).pack(side="left")
+        ttk.Button(btns, text="Kaynağı arşive ekle",
+                   command=self._archive_url).pack(side="left", padx=6)
+        return frame
+
+    def _fetch_url(self):
+        url = self.url_var.get().strip()
+        if not url:
+            return
+        self.web_label.set("Sayfa indiriliyor…")
+        self.configure(cursor="watch")
+        def worker():
+            try:
+                from text_sources import fetch_url_text
+                text = fetch_url_text(url)
+            except Exception as exc:
+                err = str(exc)
+                self.after(0, lambda: self._fetch_failed(err))
+                return
+            self.after(0, lambda: self._fetch_done(text))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fetch_done(self, text):
+        self.configure(cursor="")
+        self.web_label.set(f"{len(text)} karakter indirildi.")
+        self.web_preview.delete("1.0", "end")
+        self.web_preview.insert("1.0", text)
+
+    def _fetch_failed(self, message):
+        self.configure(cursor="")
+        self.web_label.set("Adres getirilemedi.")
+        messagebox.showerror("Web adresi", message)
+
+    def _archive(self, text, name="Girdi"):
+        if not text.strip():
+            messagebox.showinfo("Arşiv", "Eklenecek metin yok.")
+            return
+        try:
+            from ingest import add_text
+            _, msg = add_text(text.strip(), name=name)
+        except Exception as exc:
+            messagebox.showerror("Arşiv", str(exc))
+            return
+        self.app.refresh_documents()
+        messagebox.showinfo("Arşiv", msg)
+
+    def _archive_url(self):
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showinfo("Arşiv", "Önce bir adres girin.")
+            return
+        try:
+            from ingest import add_url
+            _, msg = add_url(url)
+        except Exception as exc:
+            messagebox.showerror("Arşiv", str(exc))
+            return
+        self.app.refresh_documents()
+        messagebox.showinfo("Arşiv", msg)
+
+
+class RegionSelector(tk.Toplevel):
+    """Ekrandan fare ile dikdörtgen bölge seçtiren yarı saydam pencere."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.region = None
+        self.start = None
+        self.attributes("-fullscreen", True)
+        self.attributes("-alpha", 0.3)
+        self.configure(cursor="crosshair", bg="black")
+        self.canvas = tk.Canvas(self, bg="black", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _on_press(self, event):
+        self.start = (event.x_root, event.y_root)
+        self.rect = self.canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="red", width=2)
+
+    def _on_drag(self, event):
+        if self.start:
+            self.canvas.coords(self.rect, self.start[0] - self.winfo_rootx(), self.start[1] - self.winfo_rooty(),
+                               event.x, event.y)
+
+    def _on_release(self, event):
+        if not self.start:
+            return
+        x1, y1 = self.start
+        x2, y2 = event.x_root, event.y_root
+        x, y = min(x1, x2), min(y1, y2)
+        w, h = abs(x2 - x1), abs(y2 - y1)
+        self.region = (x, y, w, h) if w > 5 and h > 5 else None
+        self.destroy()
+
+    def select(self):
+        self.wait_window()
+        return self.region
+
 
 if __name__ == "__main__":
     App().mainloop()

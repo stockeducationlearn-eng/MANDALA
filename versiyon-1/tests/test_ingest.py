@@ -2,15 +2,35 @@ from pathlib import Path
 
 import pytest
 
-import ingest
 
 
-def test_extract_txt_splits_lines(ingest_dir, tmp_path):
+def test_extract_txt_splits_paragraphs(ingest_dir, tmp_path):
     src = tmp_path / "belge.txt"
-    src.write_text("Birinci satır\n\nİkinci satır\n", encoding="utf-8")
+    src.write_text("Birinci paragraf\n\nİkinci paragraf\n", encoding="utf-8")
     chunks = ingest_dir.extract_file(src)
-    assert [loc for loc, _ in chunks] == ["Satır 1", "Satır 3"]
-    assert chunks[0][1] == "Birinci satır"
+    assert [loc for loc, _ in chunks] == ["Paragraf 1", "Paragraf 2"]
+    assert chunks[0][1] == "Birinci paragraf"
+
+
+def test_extract_txt_joins_wrapped_lines(ingest_dir, tmp_path):
+    """PDF/OCR çıktısı gibi sarılmış satırlar tek paragrafta birleşmeli."""
+    src = tmp_path / "sarilmis.txt"
+    src.write_text("Manevi tazminat iki hâlde öde\nnir. Bu ödenir.\n", encoding="utf-8")
+    chunks = ingest_dir.extract_file(src)
+    assert len(chunks) == 1
+    assert chunks[0][1] == "Manevi tazminat iki hâlde ödenir. Bu ödenir."
+
+
+def test_extract_txt_unknown_broken_word_stays_spaced(ingest_dir, tmp_path):
+    """Belgede bütün hâli hiç geçmeyen bölünme onarılamaz; boşlukla birleşir.
+
+    Yanlış birleştirme (iki kelimeyi birleştirmek) daha büyük hata olduğu için
+    emin olunmayan durumda boşluk korunur.
+    """
+    src = tmp_path / "bilinmeyen.txt"
+    src.write_text("Burada zzqq\nyyww yazıyor.\n", encoding="utf-8")
+    chunks = ingest_dir.extract_file(src)
+    assert chunks[0][1] == "Burada zzqq yyww yazıyor."
 
 
 def test_extract_docx_paragraphs_and_tables(ingest_dir, tmp_path):
@@ -76,3 +96,40 @@ def test_delete_document_removes_fts_rows(temp_db, ingest_dir, tmp_path):
         fts = con.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
     assert stored
     assert fts == 0
+
+
+def test_add_url_archives_and_indexes(temp_db, ingest_dir, web_server):
+    url = web_server + "/sayfa"
+    doc_id, msg = ingest_dir.add_url(url)
+    assert "eklendi" in msg
+    with temp_db.db() as con:
+        row = con.execute("SELECT name, stored_path, file_type, source_url FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert row["file_type"] == "web"
+    # stored_path yerel kopya (silinebilir), source_url ise orijinal adres.
+    assert row["source_url"] == url
+    assert row["stored_path"].endswith(".txt")
+    assert Path(row["stored_path"]).exists()
+    from search_engine import search
+    _, results = search("tazminat")
+    assert any("tazminatı" in r["text"] for r in results)
+    assert results[0]["source_url"] == url
+
+
+def test_add_url_dedupes_same_page(temp_db, ingest_dir, web_server):
+    first, _ = ingest_dir.add_url(web_server + "/sayfa")
+    second, msg = ingest_dir.add_url(web_server + "/sayfa")
+    assert first == second
+    assert "daha önce" in msg
+
+
+def test_add_text_archives_user_input(temp_db, ingest_dir):
+    doc_id, msg = ingest_dir.add_text("İşçi kıdem tazminatı alır.", name="Not")
+    assert "eklendi" in msg
+    with temp_db.db() as con:
+        row = con.execute("SELECT file_type FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert row["file_type"] == "text"
+
+
+def test_add_text_rejects_empty(temp_db, ingest_dir):
+    with pytest.raises(ValueError):
+        ingest_dir.add_text("   ")
