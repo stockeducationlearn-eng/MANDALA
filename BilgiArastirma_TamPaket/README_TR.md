@@ -4,7 +4,7 @@
 - PDF, DOCX, TXT, PNG, JPG/JPEG, BMP, TIFF kaynaklarını arşive alır.
 - Kaynakları `documents/` klasörüne kopyalar; metinlerini SQLite'a kaydeder.
 - PDF sayfa numarası, Word paragraf/tablo konumu, TXT satır numarası ve görsel adıyla sonuç gösterir.
-- Türkçe karakter duyarlı/duyarsız arama seçeneği, tam ifade araması ve tüm kelimeler/eşleşen kelimeler modu.
+- Türkçe karakter duyarlı/duyarsız arama seçeneği, tam ifade araması ve tüm kelimeler/eşleşen kelimeler modu. Duyarsız modda ç/ğ/ı/ö/ş/ü ve i/İ/I/ı eşitlenir; duyarlı modda Türkçe harfler aynen aranır.
 - Kaynak sonuçlarına not ekleme, önceki aramaları tekrar açma.
 - Kaynak dosyayı açma; bulunan tüm sonuçları tek raporda PDF, Word (DOCX), TXT veya CSV olarak dışa aktarma. PDF ve Word raporları varsa ekrandaki yapay zekâ konu notunu ve kaynak sonuçlarını birlikte içerir.
 - Dört araştırma modu: Otomatik, Çıkmış soru, Paragraf/metin ve Kavram.
@@ -13,6 +13,7 @@
 - İsteğe bağlı yerel Ollama modeliyle kaynak parçalarına dayalı açıklama.
 - İsteğe bağlı Tesseract OCR: görseller ve taranmış PDF sayfaları.
 - Veritabanı + kaynak arşivi için yedek oluşturma.
+- Windows, Linux ve macOS'ta kaynak dosya açma desteği.
 
 ## Windows kurulumu
 1. ZIP'i ör. `C:\BilgiArastirma` konumuna çıkar.
@@ -40,7 +41,7 @@ Ayarlar penceresinde yolu belirtin. Türkçe OCR için `tur` dil verisi, İngili
 3. Ollama uygulaması çalışır durumdayken Bilgi Araştırma içinden `Kaynaklardan konu notu oluştur` seçeneğini kullanın.
 4. `Araştırma türü` alanında `Çıkmış soru`, `Paragraf / metin` veya `Kavram` seçin. Örneğin tek başına `tazminat` yazıp `Kavram` modunu seçebilirsiniz.
 5. Oluşan notu ekranda düzenleyip `Konu notunu arşivle` düğmesiyle veritabanına ve `exports/` klasörüne kaydedin.
-4. Ayarlar içinden model adını değiştirebilirsiniz.
+6. Ayarlar içinden model adını değiştirebilirsiniz.
 
 Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boyutuna bağlıdır. Temel arama için Ollama gerekmez. Uygulama yalnızca arama sonuçlarını modele gönderir; tüm 500 sayfalık kaynağı tek seferde göndermez. Model yanıtları yine de kaynak metniyle karşılaştırılmalıdır.
 
@@ -54,7 +55,17 @@ Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boy
 Bu klasörü yedeklemek için uygulamadaki `Yedek oluştur` düğmesini kullanın. Veritabanı ile belge arşivi birlikte ZIP'e alınır.
 
 ## Arama davranışı
-Arama yerel metin eşleşmesi ve kelime örtüşmesine dayanır; gelişmiş vektör tabanlı anlamsal arama içermez. Soru metnini seçenekleriyle birlikte veya tek kavram olarak aratabilirsiniz. Ollama, aramada bulunan kaynak parçalarına göre not hazırlar; arşivde bulunmayan bilgileri kaynaklardan doğrulayamaz. Üretilen notları kaynaklarla karşılaştırın. OCR hataları, tablolar ve karmaşık sayfa düzenleri sonuçları etkileyebilir.
+Arama, SQLite FTS5 tam metin indeksi (Türkçe katlanmış metin üzerinde) ve kelime örtüşmesine dayanır; gelişmiş vektör tabanlı anlamsal arama içermez. FTS5 bulunmayan ortamlarda otomatik olarak Python taramasına düşer. Türkçe ekler için önek eşleşmesi kullanılır (`tazminat` -> `tazminatı`). Soru metnini seçenekleriyle birlikte veya tek kavram olarak aratabilirsiniz. Ollama, aramada bulunan kaynak parçalarına göre not hazırlar; arşivde bulunmayan bilgileri kaynaklardan doğrulayamaz. Üretilen notları kaynaklarla karşılaştırın. OCR hataları, tablolar ve karmaşık sayfa düzenleri sonuçları etkileyebilir.
+
+## Testler
+Geliştirme bağımlılıklarını kurup testleri çalıştırın:
+
+```powershell
+pip install -r requirements-dev.txt
+pytest
+```
+
+`tests/` klasöründe Türkçe katlama, arama motoru, belge çıkarımı ve dışa aktarma testleri bulunur. Testler geçici veritabanı kullanır; mevcut arşive dokunmaz.
 
 ## Sorun giderme
 - `py` bulunamadı: Python kurulumunu PATH seçeneğiyle yeniden yapın veya `python` komutunu deneyin.

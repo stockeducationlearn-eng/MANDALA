@@ -4,7 +4,7 @@ from PIL import Image
 import fitz
 from docx import Document as DocxDocument
 import pytesseract
-from database import connect
+from database import db, add_chunks
 
 ROOT = Path(__file__).resolve().parent
 DOC_DIR = ROOT / "documents"
@@ -75,7 +75,7 @@ def add_file(source_path, tesseract_path="", ocr_lang="tur+eng"):
     if source.suffix.lower() not in SUPPORTED:
         raise ValueError(f"Desteklenmeyen dosya türü: {source.suffix}")
     digest = sha256_file(source)
-    with connect() as con:
+    with db() as con:
         old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
         if old:
             return old["id"], "Bu dosya daha önce eklenmiş; mevcut kayıt kullanıldı."
@@ -84,13 +84,11 @@ def add_file(source_path, tesseract_path="", ocr_lang="tur+eng"):
         shutil.copy2(source, dest)
     extracted = extract_file(dest, tesseract_path, ocr_lang)
     char_count = sum(len(t) for _, t in extracted)
-    with connect() as con:
+    with db() as con:
         cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status)
             VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?)""",
             (source.name, str(dest), source.suffix.lower(), digest, char_count,
              "Metin çıkarıldı" if char_count else "Metin bulunamadı"))
         doc_id = cur.lastrowid
-        con.executemany("INSERT INTO chunks(document_id, location, text) VALUES (?, ?, ?)",
-                        [(doc_id, loc, txt) for loc, txt in extracted])
-        con.commit()
+        add_chunks(con, doc_id, extracted)
     return doc_id, f"Arşive eklendi; {len(extracted)} metin bölümü çıkarıldı."

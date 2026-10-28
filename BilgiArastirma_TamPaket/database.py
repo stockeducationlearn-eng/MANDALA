@@ -1,6 +1,9 @@
 import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
 from datetime import datetime
+
+from text_utils import tr_fold_for_search
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -14,8 +17,32 @@ def connect():
     con.execute("PRAGMA journal_mode=WAL")
     return con
 
+@contextmanager
+def db():
+    """Bağlantıyı garanti altında kapatır; hata durumunda rollback yapar."""
+    con = connect()
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
+
+def _table_exists(con, name):
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name=? AND type IN ('table','view')", (name,)
+    ).fetchone() is not None
+
+def _fts5_available():
+    try:
+        with closing(connect()) as con:
+            con.execute("CREATE VIRTUAL TABLE temp.__fts5_probe USING fts5(x)")
+            con.execute("DROP TABLE temp.__fts5_probe")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
 def init_db():
-    with connect() as con:
+    with db() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,10 +91,66 @@ def init_db():
             created_at TEXT NOT NULL
         );
         """)
-        con.commit()
+        if _fts5_available():
+            _setup_fts(con)
+            _migrate_fts(con)
+
+def _setup_fts(con):
+    """Türkçe katlanmış metin üzerinde FTS5 indeksi.
+
+    unicode61 tokenizer i/ı ayrımını çözmediği için indekse ham metni değil,
+    `tr_fold_for_search` ile sadeleştirilmiş metni yazarız.
+    """
+    existing = con.execute(
+        "SELECT sql FROM sqlite_master WHERE name='chunks_fts'"
+    ).fetchone()
+    if existing and "content=" in (existing["sql"] or ""):
+        # Eski (harici içerikli) indeks şeması uyumsuz; baştan kur.
+        con.execute("DROP TABLE chunks_fts")
+        existing = None
+    if not existing:
+        con.execute("""
+            CREATE VIRTUAL TABLE chunks_fts USING fts5(
+                text,
+                tokenize="unicode61"
+            )
+        """)
+
+def add_chunks(con, doc_id, items):
+    """chunk'ları ve FTS indeksini birlikte yazar. items: [(location, text)]."""
+    ids = []
+    for location, text in items:
+        cur = con.execute("INSERT INTO chunks(document_id, location, text) VALUES (?, ?, ?)",
+                          (doc_id, location, text))
+        chunk_id = cur.lastrowid
+        con.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)",
+                    (chunk_id, tr_fold_for_search(text)))
+        ids.append(chunk_id)
+    return ids
+
+def _migrate_fts(con):
+    """FTS indeksini chunk tablosuyla senkronla (sayı uyuşmuyorsa yeniden kur)."""
+    chunk_count = con.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    fts_count = con.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
+    if chunk_count == fts_count:
+        return
+    con.execute("DELETE FROM chunks_fts")
+    for row in con.execute("SELECT id, text FROM chunks"):
+        con.execute("INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)",
+                    (row["id"], tr_fold_for_search(row["text"])))
+
+def fts_enabled():
+    return _fts5_available() and _table_exists_safe("chunks_fts")
+
+def _table_exists_safe(name):
+    try:
+        with closing(connect()) as con:
+            return _table_exists(con, name)
+    except sqlite3.Error:
+        return False
 
 def list_documents():
-    with connect() as con:
+    with db() as con:
         return con.execute("""
         SELECT d.*, COUNT(c.id) AS chunk_count
         FROM documents d LEFT JOIN chunks c ON c.document_id=d.id
@@ -75,12 +158,13 @@ def list_documents():
         """).fetchall()
 
 def list_searches():
-    with connect() as con:
+    with db() as con:
         return con.execute("SELECT * FROM searches ORDER BY id DESC LIMIT 100").fetchall()
 
 def delete_document(doc_id):
-    with connect() as con:
+    with db() as con:
         row = con.execute("SELECT stored_path FROM documents WHERE id=?", (doc_id,)).fetchone()
+        con.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=?)",
+                    (doc_id,))
         con.execute("DELETE FROM documents WHERE id=?", (doc_id,))
-        con.commit()
         return row["stored_path"] if row else None

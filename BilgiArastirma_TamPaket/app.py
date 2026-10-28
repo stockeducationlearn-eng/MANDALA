@@ -1,10 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import threading, os, json, traceback
+import threading, os, json, sys, subprocess, traceback
 
 import database
-from database import connect
+from database import db
 from ingest import add_file
 from search_engine import search
 from ai_helper import explain_with_ollama
@@ -35,7 +35,7 @@ class App(tk.Tk):
     def load_settings(self):
         defaults = {"tesseract_path": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                     "ocr_lang": "tur+eng", "ollama_model": "qwen2.5:3b",
-                    "all_terms": False}
+                    "all_terms": False, "turkish_sensitive": False}
         if SETTINGS.exists():
             try:
                 defaults.update(json.loads(SETTINGS.read_text(encoding="utf-8")))
@@ -99,6 +99,9 @@ class App(tk.Tk):
         ttk.Label(mode_row, text="Soru/seçenek, paragraf veya tek kavram girebilirsiniz.", foreground="#555").pack(side="left", padx=8)
         self.all_terms_var = tk.BooleanVar(value=bool(self.settings.get("all_terms", False)))
         ttk.Checkbutton(qrow, text="Tüm kelimeler eşleşsin", variable=self.all_terms_var).pack(side="left", padx=8)
+        self.turkish_sensitive_var = tk.BooleanVar(value=bool(self.settings.get("turkish_sensitive", False)))
+        ttk.Checkbutton(qrow, text="Türkçe karakter duyarlı", variable=self.turkish_sensitive_var,
+                        command=self.on_turkish_toggle).pack(side="left", padx=8)
         self.status_var = tk.StringVar(value="Hazır — önce kaynak dosyalarınızı ekleyin.")
         ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(2, 5))
 
@@ -190,9 +193,11 @@ class App(tk.Tk):
         self.result_tree.delete(*self.result_tree.get_children())
         self.detail.delete("1.0", "end")
         self.all_terms_var_value = self.all_terms_var.get()
+        self.ignore_turkish_case_value = not self.turkish_sensitive_var.get()
         def worker():
             try:
-                sid, results = search(q, all_terms=self.all_terms_var_value)
+                sid, results = search(q, all_terms=self.all_terms_var_value,
+                                      ignore_turkish_case=self.ignore_turkish_case_value)
                 self.after(0, lambda: self.finish_search(sid, results))
             except Exception as exc:
                 self.after(0, lambda: messagebox.showerror("Arama hatası", str(exc)))
@@ -217,7 +222,7 @@ class App(tk.Tk):
         r = self.last_results[idx]
         self.detail.delete("1.0", "end")
         self.detail.insert("end", f"Kaynak: {r['document_name']}\nKonum: {r['location']}\n\n{r['text']}")
-        with connect() as con:
+        with db() as con:
             row = con.execute("SELECT note FROM results WHERE search_id=? AND chunk_id=?",
                               (self.last_search_id, r["chunk_id"])).fetchone()
         self.note_entry.delete(0, "end")
@@ -230,7 +235,7 @@ class App(tk.Tk):
             return
         r = self.last_results[int(sel[0])]
         note = self.note_entry.get()
-        with connect() as con:
+        with db() as con:
             con.execute("UPDATE results SET note=? WHERE search_id=? AND chunk_id=?",
                         (note, self.last_search_id, r["chunk_id"]))
             con.execute("""INSERT INTO notes(document_id, chunk_id, title, body, updated_at)
@@ -268,7 +273,7 @@ class App(tk.Tk):
             messagebox.showinfo("Konu notunu arşivle", "Önce arama yapıp Ollama ile bir konu notu oluşturun.")
             return
         sources = "\n".join(f"{r['document_name']} — {r['location']}" for r in self.last_results[:50])
-        with connect() as con:
+        with db() as con:
             con.execute("INSERT INTO research_notes(query, mode, body, sources, created_at) VALUES (?, ?, ?, ?, datetime('now','localtime'))",
                         (query, self.mode_var.get(), body, sources))
             con.commit()
@@ -305,8 +310,21 @@ class App(tk.Tk):
         sel = self.result_tree.selection()
         if not sel: return
         path = self.last_results[int(sel[0])]["stored_path"]
-        try: os.startfile(path)
-        except Exception as exc: messagebox.showerror("Dosya açılamadı", str(exc))
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception as exc:
+            messagebox.showerror("Dosya açılamadı", str(exc))
+
+    def on_turkish_toggle(self):
+        self.settings["turkish_sensitive"] = bool(self.turkish_sensitive_var.get())
+        self.save_settings_file()
+        self.status_var.set("Arama Türkçe karakter duyarlı." if self.turkish_sensitive_var.get()
+                            else "Arama Türkçe karakter duyarsız (ç/ğ/ı/ş... eşitlenir).")
 
     def refresh_history(self):
         self.history.delete(0, "end")
@@ -319,7 +337,7 @@ class App(tk.Tk):
         sel = self.history.curselection()
         if not sel: return
         search_id = self.history_ids[sel[0]]
-        with connect() as con:
+        with db() as con:
             row = con.execute("SELECT query FROM searches WHERE id=?", (search_id,)).fetchone()
         if row:
             self.query_var.set(row["query"])
@@ -359,7 +377,7 @@ class App(tk.Tk):
 
     def on_close(self):
         try:
-            with connect() as con:
+            with db() as con:
                 con.execute("PRAGMA wal_checkpoint(FULL)")
         except Exception:
             pass

@@ -57,8 +57,15 @@ def export_results(results, fmt="txt", query="", mode="", ai_answer=""):
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.lib import colors
-        # Prefer a Unicode font installed with Windows for Turkish characters.
-        font_paths = [Path(r"C:\Windows\Fonts\arial.ttf"), Path(r"C:\Windows\Fonts\calibri.ttf"), Path(r"C:\Windows\Fonts\segoeui.ttf")]
+        # Önce repoyla gelen Unicode font, sonra işletim sistemindeki yaygın fontlar.
+        font_paths = [
+            ROOT / "fonts" / "DejaVuSans.ttf",
+            Path(r"C:\Windows\Fonts\arial.ttf"),
+            Path(r"C:\Windows\Fonts\calibri.ttf"),
+            Path(r"C:\Windows\Fonts\segoeui.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/Library/Fonts/Arial Unicode.ttf"),
+        ]
         font_name = "Helvetica"
         for fp in font_paths:
             if fp.exists():
@@ -84,7 +91,7 @@ def export_results(results, fmt="txt", query="", mode="", ai_answer=""):
             elif line[:1].isdigit() and ". " in line[:5]:
                 story.append(Paragraph(escape(line), styles["TRHead"]))
             elif line:
-                story.append(Paragraph(escape(line).replace("\n", "<br/>"), styles["TRBody"]))
+                story.append(Paragraph(escape(line), styles["TRBody"]))
             else:
                 story.append(Spacer(1, 4))
         SimpleDocTemplate(str(path), pagesize=A4, rightMargin=42, leftMargin=42, topMargin=42, bottomMargin=42, title=f"Arama Raporu - {query}").build(story)
