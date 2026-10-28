@@ -8,7 +8,8 @@ from database import db
 from ingest import add_file
 from search_engine import (search, MATCH_CHOICES, match_from_label,
                            label_from_settings)
-from ai_helper import explain_with_ollama, expand_query, rank_by_relevance
+from ai_helper import (explain_with_ollama, expand_query, rank_by_relevance,
+                       check_ollama, OllamaError)
 from exporter import export_csv, export_results, backup_project
 
 ROOT = Path(__file__).resolve().parent
@@ -36,6 +37,7 @@ class App(tk.Tk):
     def load_settings(self):
         defaults = {"tesseract_path": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
                     "ocr_lang": "tur+eng", "ollama_model": "qwen2.5:3b",
+                    "ollama_timeout": 300, "ollama_keep_alive": "30m",
                     "all_terms": False, "min_coverage": 0.0, "turkish_sensitive": False}
         if SETTINGS.exists():
             try:
@@ -286,6 +288,15 @@ class App(tk.Tk):
             con.commit()
         self.status_var.set("Not veritabanına kaydedildi.")
 
+    def ollama_options(self):
+        """Ayarlardan Ollama zaman aşımı ve keep_alive değerlerini üretir."""
+        try:
+            timeout = int(self.settings.get("ollama_timeout", 300))
+        except (TypeError, ValueError):
+            timeout = 300
+        return {"read_timeout": max(30, timeout),
+                "keep_alive": self.settings.get("ollama_keep_alive", "30m")}
+
     def ai_smart_search(self):
         """Ollama ile sorguyu genişletip adayları anlamsal ilgiye göre sıralar."""
         q = self.get_query()
@@ -293,19 +304,29 @@ class App(tk.Tk):
             messagebox.showwarning("Akıllı arama", "Bir soru veya anahtar kelime yazın.")
             return
         model = self.settings.get("ollama_model", "qwen2.5:3b")
-        self.status_var.set(f"Akıllı arama: {model} sorguyu hazırlıyor…")
+        opts = self.ollama_options()
+        self.status_var.set("Akıllı arama: Ollama kontrol ediliyor…")
         self.result_tree.delete(*self.result_tree.get_children())
         self.detail.delete("1.0", "end")
         ignore_case = not self.turkish_sensitive_var.get()
 
         def worker():
             try:
+                # Uzun bir isteğe başlamadan önce hızlı ön kontrol: sunucu ayakta mı,
+                # model yüklü mü? Böylece kullanıcı dakikalarca bekletilmez.
+                status = check_ollama(model=model)
+                if not status["ok"] or not status["model_present"]:
+                    self.after(0, lambda: messagebox.showerror("Akıllı arama", status["message"]))
+                    self.after(0, lambda: self.status_var.set("Akıllı arama: Ollama hazır değil."))
+                    return
+                self.after(0, lambda: self.status_var.set(
+                    f"Akıllı arama: {model} sorudan kavramlar çıkarıyor…"))
                 concepts, warning = [], ""
                 try:
-                    expanded = expand_query(q, model=model)
+                    expanded = expand_query(q, model=model, **opts)
                     if expanded and expanded["kavramlar"]:
                         concepts = expanded["kavramlar"]
-                except Exception as exc:
+                except OllamaError as exc:
                     warning = f"Sorgu genişletilemedi ({exc}); özgün sorguyla devam edildi. "
                 # Geniş aday havuzu: özgün sorgu + modelin çıkardığı kavramlar.
                 merged, seen = [], set()
@@ -320,11 +341,19 @@ class App(tk.Tk):
                 if not merged:
                     self.after(0, lambda: self.finish_smart_search([], warning, concepts))
                     return
-                ranked = rank_by_relevance(q, merged, model=model)
+
+                def report(done, total):
+                    self.after(0, lambda: self.status_var.set(
+                        f"Akıllı arama: {model} ilgi puanlıyor… {done}/{total}"))
+
+                ranked = rank_by_relevance(q, merged, model=model, progress=report, **opts)
                 self.after(0, lambda: self.finish_smart_search(ranked, warning, concepts))
+            except OllamaError as exc:
+                msg = str(exc)
+                self.after(0, lambda: messagebox.showerror("Akıllı arama", msg))
+                self.after(0, lambda: self.status_var.set("Akıllı arama başarısız."))
             except Exception as exc:
-                err = ("Ollama'ya bağlanılamadı. Ollama kurulu, çalışır ve model indirilmiş olmalı.\n\n"
-                       "Kurulum komutu örneği: ollama pull " + model + "\n\nTeknik ayrıntı: " + str(exc))
+                err = "Beklenmeyen hata: " + str(exc)
                 self.after(0, lambda: messagebox.showerror("Akıllı arama", err))
                 self.after(0, lambda: self.status_var.set("Akıllı arama başarısız."))
         threading.Thread(target=worker, daemon=True).start()
@@ -355,14 +384,24 @@ class App(tk.Tk):
             messagebox.showinfo("Açıklama", "Önce arama yapın ve ilgili kaynakları bulun.")
             return
         model = self.settings.get("ollama_model", "qwen2.5:3b")
+        opts = self.ollama_options()
         q = self.get_query()
         self.status_var.set(f"Yerel model yanıtı bekleniyor: {model}")
         def worker():
             try:
-                answer = explain_with_ollama(q, self.last_results, model=model, mode=self.mode_var.get())
+                status = check_ollama(model=model)
+                if not status["ok"] or not status["model_present"]:
+                    answer = status["message"]
+                else:
+                    def report(chars):
+                        self.after(0, lambda: self.status_var.set(
+                            f"Yerel model yanıt üretiyor: {model} ({chars} karakter)"))
+                    answer = explain_with_ollama(q, self.last_results, model=model,
+                                                 mode=self.mode_var.get(), progress=report, **opts)
+            except OllamaError as exc:
+                answer = str(exc)
             except Exception as exc:
-                answer = ("Ollama'ya bağlanılamadı. Ollama kurulu, çalışır ve model indirilmiş olmalı.\n\n"
-                          "Kurulum komutu örneği: ollama pull qwen2.5:3b\n\nTeknik ayrıntı: " + str(exc))
+                answer = "Beklenmeyen hata: " + str(exc)
             self.after(0, lambda: self.show_ai_answer(answer))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -478,7 +517,7 @@ class App(tk.Tk):
     def open_settings(self):
         win = tk.Toplevel(self)
         win.title("Ayarlar")
-        win.geometry("720x330")
+        win.geometry("720x430")
         win.transient(self)
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
@@ -492,13 +531,23 @@ class App(tk.Tk):
         ttk.Label(frm, text="Ollama model adı:").grid(row=4, column=0, sticky="w", pady=(10, 2))
         model = tk.StringVar(value=self.settings.get("ollama_model", "qwen2.5:3b"))
         ttk.Entry(frm, textvariable=model, width=30).grid(row=5, column=0, sticky="w")
+        ttk.Label(frm, text="Ollama yanıt süresi (saniye, en az 30):").grid(row=6, column=0, sticky="w", pady=(10, 2))
+        timeout = tk.StringVar(value=str(self.settings.get("ollama_timeout", 300)))
+        ttk.Entry(frm, textvariable=timeout, width=10).grid(row=7, column=0, sticky="w")
+        ttk.Label(frm, text="Yavaş bilgisayarlarda model uzun süre yanıt üretmezse bu değeri artırın.",
+                  foreground="#555").grid(row=8, column=0, sticky="w")
         def save():
+            try:
+                secs = max(30, int(float(timeout.get().strip())))
+            except (TypeError, ValueError):
+                secs = 300
             self.settings.update({"tesseract_path": tess.get().strip(), "ocr_lang": lang.get().strip() or "tur+eng",
-                                  "ollama_model": model.get().strip() or "qwen2.5:3b"})
+                                  "ollama_model": model.get().strip() or "qwen2.5:3b",
+                                  "ollama_timeout": secs})
             self.save_settings_file()
             win.destroy()
             messagebox.showinfo("Ayarlar", "Ayarlar kaydedildi.")
-        ttk.Button(frm, text="Kaydet", command=save).grid(row=6, column=0, sticky="w", pady=12)
+        ttk.Button(frm, text="Kaydet", command=save).grid(row=9, column=0, sticky="w", pady=12)
 
     def on_close(self):
         try:

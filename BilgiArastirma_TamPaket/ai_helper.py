@@ -3,21 +3,123 @@ import re
 
 import requests
 
-_OLLAMA_TIMEOUT = 600
+# Bağlantı kurma kısa, yanıt bekleme uzun olabilir; bu yüzden ayrı zaman aşımları
+# kullanılır. Akışlı (stream) istekte okuma zaman aşımı her parça için geçerlidir,
+# yani model yavaş üretse de toplam süre sınırsız kalır.
+CONNECT_TIMEOUT = 10
+DEFAULT_READ_TIMEOUT = 300
+DEFAULT_KEEP_ALIVE = "30m"
 
 
-def _ollama_generate(prompt, model, host, temperature=0.2, timeout=_OLLAMA_TIMEOUT):
-    response = requests.post(
-        f"{host.rstrip('/')}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False,
-              "options": {"temperature": temperature}},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    return response.json().get("response", "").strip()
+class OllamaError(RuntimeError):
+    """Ollama isteği başarısız oldu; kullanıcıya gösterilecek Türkçe mesaj taşır."""
 
 
-def expand_query(question, model="qwen2.5:3b", host="http://localhost:11434"):
+def _classify(exc, host, model, read_timeout):
+    """Alt seviye istisnayı, kullanıcının ne yapacağını anlatan mesaja çevirir."""
+    text = str(exc)
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(exc.response, "status_code", "?")
+        detail = ""
+        try:
+            detail = (exc.response.text or "")[:300]
+        except Exception:
+            pass
+        hint = ""
+        if status == 404:
+            hint = f"\n'{model}' modeli bulunamadı. 'ollama pull {model}' ile indirin."
+        return OllamaError(f"Ollama isteği reddedildi (HTTP {status}).{hint}\nAyrıntı: {detail}")
+    if isinstance(exc, requests.exceptions.Timeout) or "timed out" in text.lower():
+        return OllamaError(
+            f"Model {read_timeout} saniye içinde yanıt üretemedi (zaman aşımı).\n"
+            "Ollama çalışıyor, ancak yanıt yetişmedi. Şunları deneyin:\n"
+            "• Daha küçük/hızlı bir model kullanın (ör. qwen2.5:1.5b veya llama3.2:3b).\n"
+            "• Ayarlar > 'Ollama yanıt süresi (sn)' değerini artırın.\n"
+            "• İlk çağrı modeli belleğe yükler ve yavaştır; ikinci deneme genelde hızlı olur.\n"
+            "• Model belleğe sığmıyorsa sürekli diskten yüklenir; daha küçük model seçin."
+        )
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return OllamaError(
+            f"Ollama sunucusuna ulaşılamadı ({host}).\n"
+            "Ollama kurulu ve çalışıyor mu? Kurulumdan sonra 'ollama serve' komutunu "
+            "veya Ollama uygulamasını başlatın."
+        )
+    return OllamaError(f"Ollama isteği başarısız oldu: {text}")
+
+
+def _ollama_generate(prompt, model, host, temperature=0.2,
+                     read_timeout=DEFAULT_READ_TIMEOUT, keep_alive=DEFAULT_KEEP_ALIVE,
+                     progress=None):
+    """Ollama'ya akışlı istek gönderir ve üretilen metni döndürür.
+
+    Akış kullanmanın nedeni: `stream=False` isteğinde sunucu tüm yanıtı tek
+    parçada gönderir, uzun bir üretimde okuma zaman aşımına takılır ve kullanıcı
+    "bağlanılamadı" hatası görür (oysa bağlantı kurulmuştur). Akışta her parça
+    ayrı geldiği için yavaş modellerde de istek tamamlanır; ayrıca ilerleme
+    bildirilebilir.
+    """
+    url = f"{host.rstrip('/')}/api/generate"
+    try:
+        response = requests.post(
+            url,
+            json={"model": model, "prompt": prompt, "stream": True,
+                  "keep_alive": keep_alive, "options": {"temperature": temperature}},
+            timeout=(CONNECT_TIMEOUT, read_timeout), stream=True,
+        )
+        response.raise_for_status()
+        pieces = []
+        produced = 0
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            error = payload.get("error")
+            if error:
+                raise OllamaError(f"Ollama hata döndürdü: {error}")
+            piece = payload.get("response", "")
+            if piece:
+                pieces.append(piece)
+                produced += len(piece)
+                if progress:
+                    progress(produced)
+            if payload.get("done"):
+                break
+        return "".join(pieces).strip()
+    except OllamaError:
+        raise
+    except Exception as exc:
+        raise _classify(exc, host, model, read_timeout) from exc
+
+
+def check_ollama(host="http://localhost:11434", model=None, timeout=5):
+    """Ollama erişilebilir mi ve istenen model yüklü mü? Hata yükseltmez.
+
+    Uzun bir isteğe başlamadan önce hızlı bir ön kontrol yapmak, kullanıcıyı
+    dakikalarca bekletip sonunda hata görmekten kurtarır.
+    """
+    try:
+        response = requests.get(f"{host.rstrip('/')}/api/tags", timeout=timeout)
+        response.raise_for_status()
+        names = [m.get("name", "") for m in response.json().get("models", [])]
+    except Exception:
+        return {"ok": False, "model_present": False, "models": [],
+                "message": f"Ollama sunucusuna ulaşılamadı ({host}).\n"
+                           "Ollama kurulu ve çalışıyor mu? 'ollama serve' komutunu deneyin."}
+    if model:
+        base = model.split(":")[0]
+        if not any(n == model or n.split(":")[0] == base for n in names):
+            return {"ok": True, "model_present": False, "models": names,
+                    "message": f"'{model}' modeli yüklü görünmüyor.\n"
+                               f"İndirmek için: ollama pull {model}\n"
+                               f"Yüklü modeller: {', '.join(names) if names else 'yok'}"}
+    return {"ok": True, "model_present": True, "models": names, "message": ""}
+
+
+def expand_query(question, model="qwen2.5:3b", host="http://localhost:11434",
+                 read_timeout=DEFAULT_READ_TIMEOUT, keep_alive=DEFAULT_KEEP_ALIVE):
     """Soru metnini, kaynakta aranacak kısa anahtar kavramlara indirir.
 
     Sınav sorularında seçenekler birbirinin çeldiricisidir; hepsini birlikte
@@ -35,7 +137,8 @@ En fazla 6 kavram yaz; her kavram 1-3 kelime olsun.
 SORU:
 {question}
 """
-    raw = _ollama_generate(prompt, model, host, temperature=0.0, timeout=180)
+    raw = _ollama_generate(prompt, model, host, temperature=0.0,
+                           read_timeout=read_timeout, keep_alive=keep_alive)
     match = re.search(r"\{.*\}", raw, re.S)
     if not match:
         return None
@@ -47,20 +150,11 @@ SORU:
     return {"konu": str(data.get("konu", "")).strip(), "kavramlar": concepts[:6]} or None
 
 
-def rank_by_relevance(question, results, model="qwen2.5:3b", host="http://localhost:11434",
-                      max_candidates=40):
-    """Aday parçaları, soruyla anlamsal ilgilerine göre puanlatır.
-
-    Kelime eşleşmesinin yakalayamadığı durumlar (eşanlamlılar, farklı çekimler)
-    burada yakalanır. Model "arayıcı" değil "jüri"dir: adaylar zaten kelime
-    tabanlı aramayla getirilmiştir; model yalnızca sıralar.
-    """
-    if not results:
-        return []
-    candidates = results[:max_candidates]
+def _score_batch(question, batch, model, host, read_timeout, keep_alive):
+    """Tek bir istekte bir grup parçayı puanlar; {indeks: puan} döndürür."""
     listing = "\n".join(
-        f"[{i}] {r['document_name']} | {r['location']}\n{r['text'][:700]}"
-        for i, r in enumerate(candidates)
+        f"[{i}] {r['document_name']} | {r['location']}\n{r['text'][:600]}"
+        for i, r in enumerate(batch)
     )
     prompt = f"""Aşağıda bir soru ve kaynak parçaları verilmiştir. Her parçanın bu soruyla
 ilgisini 0-10 arasında puanla (10 = soruyu doğrudan yanıtlıyor, 0 = ilgisiz).
@@ -76,28 +170,54 @@ SORU:
 KAYNAK PARÇALARI:
 {listing}
 """
-    raw = _ollama_generate(prompt, model, host, temperature=0.0)
+    raw = _ollama_generate(prompt, model, host, temperature=0.0,
+                           read_timeout=read_timeout, keep_alive=keep_alive)
     match = re.search(r"\{.*\}", raw, re.S)
     if not match:
-        raise ValueError("Model geçerli bir puan listesi döndürmedi.")
+        raise OllamaError("Model geçerli bir puan listesi döndürmedi.")
     try:
-        scores = json.loads(match.group(0)).get("puanlar", {})
+        return json.loads(match.group(0)).get("puanlar", {})
     except ValueError as exc:
-        raise ValueError("Model yanıtı JSON olarak çözümlenemedi.") from exc
-    ranked = []
-    for i, r in enumerate(candidates):
-        try:
-            score = float(scores.get(str(i), 0))
-        except (TypeError, ValueError):
-            score = 0.0
-        item = dict(r)
-        item["ai_score"] = max(0.0, min(10.0, score))
-        ranked.append(item)
-    ranked.sort(key=lambda r: r["ai_score"], reverse=True)
-    return ranked
+        raise OllamaError("Model yanıtı JSON olarak çözümlenemedi.") from exc
 
 
-def explain_with_ollama(question, results, model="qwen2.5:3b", host="http://localhost:11434", mode="Otomatik"):
+def rank_by_relevance(question, results, model="qwen2.5:3b", host="http://localhost:11434",
+                      max_candidates=30, batch_size=10,
+                      read_timeout=DEFAULT_READ_TIMEOUT, keep_alive=DEFAULT_KEEP_ALIVE,
+                      progress=None):
+    """Aday parçaları, soruyla anlamsal ilgilerine göre puanlatır.
+
+    Kelime eşleşmesinin yakalayamadığı durumlar (eşanlamlılar, farklı çekimler)
+    burada yakalanır. Model "arayıcı" değil "jüri"dir: adaylar zaten kelime
+    tabanlı aramayla getirilmiştir; model yalnızca sıralar.
+
+    Puanlama küçük gruplar hâlinde yapılır; tek büyük istek yavaş donanımda
+    zaman aşımına uğradığı için bu, isteği güvenilir kılar.
+    """
+    if not results:
+        return []
+    candidates = results[:max_candidates]
+    scored = []
+    for start in range(0, len(candidates), batch_size):
+        batch = candidates[start:start + batch_size]
+        scores = _score_batch(question, batch, model, host, read_timeout, keep_alive)
+        for offset, r in enumerate(batch):
+            try:
+                value = float(scores.get(str(offset), 0))
+            except (TypeError, ValueError):
+                value = 0.0
+            item = dict(r)
+            item["ai_score"] = max(0.0, min(10.0, value))
+            scored.append(item)
+        if progress:
+            progress(min(start + batch_size, len(candidates)), len(candidates))
+    scored.sort(key=lambda r: r["ai_score"], reverse=True)
+    return scored
+
+
+def explain_with_ollama(question, results, model="qwen2.5:3b", host="http://localhost:11434",
+                        mode="Otomatik", read_timeout=DEFAULT_READ_TIMEOUT,
+                        keep_alive=DEFAULT_KEEP_ALIVE, progress=None):
     if not results:
         return "İlgili kaynak bulunamadı. Bu nedenle kaynaklara dayalı not oluşturulamadı."
     # İlk sıralardaki sonuçlara ek olarak, mümkün olduğunca farklı kaynaklardan parçalar seç.
@@ -149,11 +269,7 @@ KULLANICININ GİRDİSİ:
 KAYNAK PARÇALARI:
 {chr(10).join(source_text)}
 """
-    response = requests.post(
-        f"{host.rstrip('/')}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False, "options": {"temperature": 0.2}},
-        timeout=_OLLAMA_TIMEOUT
-    )
-    response.raise_for_status()
-    answer = response.json().get("response", "").strip()
+    answer = _ollama_generate(prompt, model, host, temperature=0.2,
+                              read_timeout=read_timeout, keep_alive=keep_alive,
+                              progress=progress)
     return answer + "\n\n--- KULLANILAN KAYNAKLAR ---\n" + "\n".join(source_index)

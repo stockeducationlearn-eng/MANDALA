@@ -49,9 +49,17 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **Arama sorguları:** Türkçe ekler için önek (`"terim"*`) ve ortak kök eşleşmesi
   (`_term_matches`) kullanılır.
 - **Ollama:** `ai_helper.expand_query` ve `rank_by_relevance` ağ çağrısı yapar ve
-  hata durumunda istisna yükseltir; çağıran taraf (app.py) kullanıcıya anlaşılır
+  hata durumunda `OllamaError` yükseltir; çağıran taraf (app.py) kullanıcıya anlaşılır
   mesaj gösterip normal aramaya düşmelidir. Model "arayıcı" değil "jüri"dir: adaylar
   önce kelime tabanlı aramayla getirilir.
+- **Ollama akışı:** Tüm istekler `stream=True` ile gönderilir. `stream=False` isteğinde
+  sunucu yanıtı tek parçada yollar; uzun üretim okuma zaman aşımına takılır ve
+  kullanıcı yanlışlıkla "bağlanılamadı" hatası görür. Akışta zaman aşımı parça başına
+  geçerlidir. Zaman aşımı ile bağlantı hatasını ayırt etmek için `_classify()` kullanın;
+  ikisi de `requests.ConnectionError` olarak gelebilir, mesaj metnine bakmak gerekir.
+- **Ollama ön kontrolü:** Uzun istekten önce `check_ollama()` ile sunucu ve model
+  doğrulanır. Puanlama `batch_size` (varsayılan 10) ile gruplanır; tek büyük istek
+  yavaş donanımda zaman aşımına uğrar.
 - **Metin kaynakları:** `text_sources.py` dış ağa yalnızca `requests` ile çıkar; dosya
   yazmaz. Web getirme `http`/`https` dışını reddeder ve yanıt boyutunu sınırlar.
   `app.py` içindeki `InputSourceDialog` ağır işleri (OCR, indirme) arka plan iş

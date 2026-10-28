@@ -85,6 +85,14 @@ Kapsam, parça (satır/sayfa) yerine belge düzeyinde ölçülür; çünkü bir 
 ### Akıllı arama (Ollama)
 `Akıllı ara (Ollama)` düğmesi iki aşamalı çalışır: önce model sorudan anahtar kavramları çıkarır (seçenekleri yok sayar), sonra getirilen adayları soruyla anlamsal ilgilerine göre 0-10 arası puanlayıp sıralar. Kelime eşleşmesinin kaçırdığı eşanlamlı ve farklı çekimli ifadeleri yakalar. Ollama gerekir; yoksa uyarı verir ve normal arama kullanılabilir kalır.
 
+İstekler **akışlı** (streaming) gönderilir: model yanıtı parça parça ürettiği için yavaş bilgisayarlarda da istek tamamlanır ve durum çubuğunda ilerleme görünür. Arama başlamadan önce Ollama'nın çalışıp çalışmadığı ve modelin yüklü olup olmadığı hızlıca kontrol edilir.
+
+**"zaman aşımı" hatası alırsanız:** Ollama çalışıyor demektir, yalnızca model yetişmemiştir. Şunları deneyin:
+- Daha küçük/hızlı bir model kullanın (ör. `qwen2.5:1.5b` veya `llama3.2:3b`). Ayarlar > `Ollama model adı`.
+- Ayarlar > `Ollama yanıt süresi (saniye)` değerini artırın (varsayılan 300).
+- İlk çağrı modeli belleğe yüklediği için yavaştır; ikinci deneme genelde çok daha hızlıdır.
+- Model belleğe sığmıyorsa her seferinde diskten yüklenir; daha küçük model seçin.
+
 Ollama, aramada bulunan kaynak parçalarına göre not hazırlar; arşivde bulunmayan bilgileri kaynaklardan doğrulayamaz. Üretilen notları kaynaklarla karşılaştırın. OCR hataları, tablolar ve karmaşık sayfa düzenleri sonuçları etkileyebilir.
 
 ## Testler
