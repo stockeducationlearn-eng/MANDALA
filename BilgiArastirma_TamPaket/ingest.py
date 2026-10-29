@@ -4,6 +4,7 @@ from PIL import Image
 import fitz
 from docx import Document as DocxDocument
 import pytesseract
+import database
 from database import db, add_chunks
 from text_utils import split_paragraphs, _vocabulary
 
@@ -21,6 +22,36 @@ def sha256_file(path):
 
 def safe_name(name):
     return (re.sub(r'[<>:"/\\\\|?*]', "_", name).strip(" .") or "belge")[:140]
+
+class DuplicateError(Exception):
+    """Aynı içerikli dosya arşivde zaten var."""
+
+    def __init__(self, doc_id, name):
+        self.doc_id, self.name = doc_id, name
+        super().__init__(f"Bu dosya zaten arşivde: {name}")
+
+
+class NameConflictError(Exception):
+    """Aynı adda bir kayıt var; kullanıcı yeni ad seçmeli."""
+
+    def __init__(self, conflict, suggestion):
+        self.conflict, self.suggestion = conflict, suggestion
+        super().__init__(f"'{conflict['name']}' adında bir kaynak zaten var.")
+
+
+def _name_conflict(name, digest):
+    """Var olan bir adla çakışma olup olmadığını döndürür.
+
+    Dönen: None (çakışma yok) | DuplicateError | NameConflictError
+    """
+    from library import find_conflict, is_identical, suggest_name
+    existing = database.document_names()
+    conflict = find_conflict(name, existing)
+    if not conflict:
+        return None
+    if is_identical(conflict, digest):
+        return DuplicateError(conflict["id"], conflict["name"])
+    return NameConflictError(conflict, suggest_name(name, existing))
 
 def configure_tesseract(path):
     if path and Path(path).exists():
@@ -79,31 +110,56 @@ def extract_file(path, tesseract_path="", ocr_lang="tur+eng"):
             chunks.append(("Görsel", "[OCR kullanılmadı. Ayarlardan Tesseract OCR yolunu belirtin.]"))
     return chunks
 
-def add_file(source_path, tesseract_path="", ocr_lang="tur+eng"):
+def add_file(source_path, tesseract_path="", ocr_lang="tur+eng",
+             display_name=None, to_archive=False, on_conflict=None):
+    """Bir dosyayı arşive alır ve indeksler.
+
+    display_name: kaydın görünecek adı (yeniden adlandırma için).
+    to_archive:  True ise kayıt arşivde sayılır; varsayılan yeni çalışma.
+    on_conflict: çakışmada çağrılan geri çağrı; yeni ad döndürürse devam eder,
+                 None döndürürse işlem iptal edilir. Verilmezse hata yükseltilir.
+    """
     source = Path(source_path)
     if source.suffix.lower() not in SUPPORTED:
         raise ValueError(f"Desteklenmeyen dosya türü: {source.suffix}")
     digest = sha256_file(source)
+    name = display_name or source.name
+
+    # Aynı içerik daha önce eklenmişse mevcut kaydı kullan (yinelenen kopya olmaz).
     with db() as con:
-        old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
+        old = con.execute("SELECT id, name FROM documents WHERE sha256=?", (digest,)).fetchone()
         if old:
             return old["id"], "Bu dosya daha önce eklenmiş; mevcut kayıt kullanıldı."
-    dest = DOC_DIR / f"{digest[:12]}_{safe_name(source.stem)}{source.suffix.lower()}"
+
+    conflict = _name_conflict(name, digest)
+    if isinstance(conflict, DuplicateError):
+        return conflict.doc_id, "Bu dosya daha önce eklenmiş; mevcut kayıt kullanıldı."
+    if isinstance(conflict, NameConflictError):
+        if on_conflict is None:
+            raise conflict
+        new_name = on_conflict(conflict)
+        if not new_name:
+            return None, "İşlem iptal edildi."
+        name = new_name
+
+    dest = DOC_DIR / f"{digest[:12]}_{safe_name(Path(name).stem)}{source.suffix.lower()}"
     if not dest.exists():
         shutil.copy2(source, dest)
     extracted = extract_file(dest, tesseract_path, ocr_lang)
     char_count = sum(len(t) for _, t in extracted)
     with db() as con:
-        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status)
-            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?)""",
-            (source.name, str(dest), source.suffix.lower(), digest, char_count,
-             "Metin çıkarıldı" if char_count else "Metin bulunamadı"))
+        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at,
+                char_count, status, in_study, in_archive)
+            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?)""",
+            (name, str(dest), source.suffix.lower(), digest, char_count,
+             "Metin çıkarıldı" if char_count else "Metin bulunamadı",
+             0 if to_archive else 1, 1 if to_archive else 0))
         doc_id = cur.lastrowid
         add_chunks(con, doc_id, extracted)
-    return doc_id, f"Arşive eklendi; {len(extracted)} metin bölümü çıkarıldı."
+    return doc_id, f"Kaynak eklendi; {len(extracted)} metin bölümü çıkarıldı."
 
 
-def _store_text(name, file_type, source_text, origin, digest):
+def _store_text(name, file_type, source_text, origin, digest, to_archive=False):
     """Metni arşive yazar ve indeksler.
 
     `stored_path` her zaman yerel `.txt` kopyasını tutar; `source_url` ise
@@ -120,16 +176,18 @@ def _store_text(name, file_type, source_text, origin, digest):
         paragraphs = [source_text.strip() or "(boş)"]
     lines = [(f"Paragraf {i}", para) for i, para in enumerate(paragraphs, 1)]
     with db() as con:
-        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at, char_count, status, source_url)
-            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?)""",
+        cur = con.execute("""INSERT INTO documents(name, stored_path, file_type, sha256, added_at,
+                char_count, status, source_url, in_study, in_archive)
+            VALUES (?, ?, ?, ?, datetime('now','localtime'), ?, ?, ?, ?, ?)""",
             (name, str(dest), file_type, digest, len(source_text),
-             "Metin çıkarıldı" if source_text.strip() else "Metin bulunamadı", origin or ""))
+             "Metin çıkarıldı" if source_text.strip() else "Metin bulunamadı", origin or "",
+             0 if to_archive else 1, 1 if to_archive else 0))
         doc_id = cur.lastrowid
         add_chunks(con, doc_id, lines)
-    return doc_id, f"Arşive eklendi; {len(lines)} metin bölümü çıkarıldı."
+    return doc_id, f"Kaynak eklendi; {len(lines)} metin bölümü çıkarıldı."
 
 
-def add_url(url, timeout=None):
+def add_url(url, timeout=None, to_archive=False):
     """Bir web adresinin metnini indirip arşive kaynak olarak ekler."""
     from text_sources import fetch_url_text
     text = fetch_url_text(url) if timeout is None else fetch_url_text(url, timeout=timeout)
@@ -142,10 +200,10 @@ def add_url(url, timeout=None):
             return old["id"], "Bu sayfa daha önce eklenmiş; mevcut kayıt kullanıldı."
     clean = url.strip()
     name = re.sub(r"^https?://", "", clean).split("?")[0][:80] or "web_sayfasi"
-    return _store_text(name, "web", text, clean, digest)
+    return _store_text(name, "web", text, clean, digest, to_archive=to_archive)
 
 
-def add_text(text, name="Serbest metin"):
+def add_text(text, name="Serbest metin", to_archive=False):
     """Kullanıcının yapıştırdığı/ekrandan gelen metni arşive ekler."""
     if not text or not text.strip():
         raise ValueError("Eklenecek metin boş.")
@@ -154,4 +212,4 @@ def add_text(text, name="Serbest metin"):
         old = con.execute("SELECT id FROM documents WHERE sha256=?", (digest,)).fetchone()
         if old:
             return old["id"], "Bu metin daha önce eklenmiş; mevcut kayıt kullanıldı."
-    return _store_text(name, "text", text, "", digest)
+    return _store_text(name, "text", text, "", digest, to_archive=to_archive)

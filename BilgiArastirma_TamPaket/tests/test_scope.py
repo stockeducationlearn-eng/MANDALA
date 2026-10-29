@@ -1,4 +1,4 @@
-from scope import resolve_scope, scope_text, toggle_selection
+from scope import resolve_scope, scope_text, toggle_selection, selection_after_delete
 
 
 def test_none_means_every_source():
@@ -48,3 +48,29 @@ def test_scope_text_describes_each_case():
     assert scope_text(None, 3) == "tüm kaynaklar (3)"
     assert scope_text([1, 2], 3) == "2/3 kaynak seçili"
     assert "hiçbir kaynak" in scope_text([], 3)
+
+
+def test_delete_keeps_untouched_selection():
+    assert selection_after_delete([1, 2, 3], [2], [1, 3]) == [1, 3]
+
+
+def test_delete_of_all_selected_falls_back_to_all_remaining():
+    """Seçili kaynaklar silinince arama boş dönmesin; kalanlara düşülür."""
+    assert selection_after_delete([1, 2], [1, 2], [3, 4]) is None
+
+
+def test_delete_keeping_all_selected_is_none():
+    assert selection_after_delete(None, [1], [2, 3]) is None
+
+
+def test_delete_preserves_deliberate_none_selection():
+    """Kullanıcı 'hiçbiri' demişse silme bunu değiştirmez."""
+    assert selection_after_delete([], [1], [2, 3]) == []
+
+
+def test_delete_everything_leaves_empty():
+    assert selection_after_delete([1, 2], [1, 2], []) == []
+
+
+def test_delete_drops_stale_ids():
+    assert selection_after_delete([1, 99], [1], [2]) is None

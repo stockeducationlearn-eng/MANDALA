@@ -133,3 +133,109 @@ def test_add_text_archives_user_input(temp_db, ingest_dir):
 def test_add_text_rejects_empty(temp_db, ingest_dir):
     with pytest.raises(ValueError):
         ingest_dir.add_text("   ")
+
+
+def test_add_file_new_source_joins_study_list(temp_db, ingest_dir, tmp_path):
+    """Yeni eklenen dosya çalışma listesine girer, arşive değil."""
+    src = tmp_path / "yeni.txt"
+    src.write_text("Yeni çalışma kaynağı.\n", encoding="utf-8")
+    doc_id, _ = ingest_dir.add_file(src)
+    with temp_db.db() as con:
+        row = con.execute("SELECT in_study, in_archive FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert (row["in_study"], row["in_archive"]) == (1, 0)
+
+
+def test_add_file_to_archive_flag(temp_db, ingest_dir, tmp_path):
+    src = tmp_path / "arsiv.txt"
+    src.write_text("Arşive giden kaynak.\n", encoding="utf-8")
+    doc_id, _ = ingest_dir.add_file(src, to_archive=True)
+    with temp_db.db() as con:
+        row = con.execute("SELECT in_study, in_archive FROM documents WHERE id=?", (doc_id,)).fetchone()
+    assert (row["in_study"], row["in_archive"]) == (0, 1)
+
+
+def test_add_file_same_name_different_content_raises_conflict(temp_db, ingest_dir, tmp_path):
+    """Aynı isimde farklı içerik: işlem engellenir ve yeni ad önerilir."""
+    a = tmp_path / "rapor.txt"
+    a.write_text("Birinci içerik.\n", encoding="utf-8")
+    ingest_dir.add_file(a)
+    b = tmp_path / "rapor.txt"
+    b.write_text("Tamamen başka bir içerik.\n", encoding="utf-8")
+    with pytest.raises(ingest_dir.NameConflictError) as info:
+        ingest_dir.add_file(b)
+    assert info.value.conflict["name"] == "rapor.txt"
+    assert info.value.suggestion == "rapor (2).txt"
+
+
+def test_add_file_conflict_can_be_resolved_with_new_name(temp_db, ingest_dir, tmp_path):
+    a = tmp_path / "rapor.txt"
+    a.write_text("Birinci içerik.\n", encoding="utf-8")
+    ingest_dir.add_file(a)
+    b = tmp_path / "rapor.txt"
+    b.write_text("İkinci, farklı içerik.\n", encoding="utf-8")
+    doc_id, msg = ingest_dir.add_file(b, display_name="rapor (2).txt")
+    assert "eklendi" in msg
+    with temp_db.db() as con:
+        names = [r["name"] for r in con.execute("SELECT name FROM documents ORDER BY id")]
+    assert names == ["rapor.txt", "rapor (2).txt"]
+
+
+def test_add_file_conflict_callback_can_cancel(temp_db, ingest_dir, tmp_path):
+    a = tmp_path / "rapor.txt"
+    a.write_text("Birinci içerik.\n", encoding="utf-8")
+    ingest_dir.add_file(a)
+    b = tmp_path / "rapor.txt"
+    b.write_text("Başka içerik.\n", encoding="utf-8")
+    doc_id, msg = ingest_dir.add_file(b, on_conflict=lambda _c: None)
+    assert doc_id is None
+    assert "iptal" in msg
+    with temp_db.db() as con:
+        total = con.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    assert total == 1
+
+
+def test_add_file_identical_content_is_reused_not_duplicated(temp_db, ingest_dir, tmp_path):
+    """Aynı içerik, farklı adla gelse de ikinci kopya oluşmaz."""
+    a = tmp_path / "rapor.txt"
+    a.write_text("Aynı içerik.\n", encoding="utf-8")
+    first, _ = ingest_dir.add_file(a)
+    b = tmp_path / "rapor_kopya.txt"
+    b.write_text("Aynı içerik.\n", encoding="utf-8")
+    second, msg = ingest_dir.add_file(b)
+    assert first == second
+    assert "daha önce" in msg
+    with temp_db.db() as con:
+        total = con.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+    assert total == 1
+
+
+def test_rename_document_updates_name(temp_db, ingest_dir, tmp_path):
+    src = tmp_path / "eski.txt"
+    src.write_text("Metin.\n", encoding="utf-8")
+    doc_id, _ = ingest_dir.add_file(src)
+    temp_db.rename_document(doc_id, "yeni ad.txt")
+    with temp_db.db() as con:
+        name = con.execute("SELECT name FROM documents WHERE id=?", (doc_id,)).fetchone()["name"]
+    assert name == "yeni ad.txt"
+
+
+def test_study_and_archive_lists_are_disjoint(temp_db, ingest_dir, tmp_path):
+    a = tmp_path / "a.txt"
+    a.write_text("A içeriği.\n", encoding="utf-8")
+    b = tmp_path / "b.txt"
+    b.write_text("B içeriği.\n", encoding="utf-8")
+    id_a, _ = ingest_dir.add_file(a)
+    id_b, _ = ingest_dir.add_file(b, to_archive=True)
+    assert [d["id"] for d in temp_db.list_study_documents()] == [id_a]
+    assert [d["id"] for d in temp_db.list_archive_documents()] == [id_b]
+
+
+def test_migrated_rows_do_not_appear_in_both_lists(temp_db, ingest_dir, tmp_path):
+    """Eski kayıt (in_study=1, in_archive=1) yalnızca çalışma listesinde görünür."""
+    src = tmp_path / "eski.txt"
+    src.write_text("Eski kayıt.\n", encoding="utf-8")
+    doc_id, _ = ingest_dir.add_file(src)
+    with temp_db.db() as con:
+        con.execute("UPDATE documents SET in_archive=1 WHERE id=?", (doc_id,))
+    assert [d["id"] for d in temp_db.list_study_documents()] == [doc_id]
+    assert temp_db.list_archive_documents() == []

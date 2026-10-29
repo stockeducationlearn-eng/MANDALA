@@ -1,5 +1,58 @@
 # Değişiklik Notları
 
+## Sürüm 4.0
+
+1. adım iki bölüme ayrıldı ve kaynak yönetimi baştan kuruldu: yeni bir çalışma
+için eklenen kaynaklarla, daha önce kullanılmış kaynakların tutulduğu döküman
+arşivi artık ayrı listeler.
+
+### Yeni döküman ekle
+
+- `＋ Kaynak ekle…` ve `Girdi kaynağından al…` düğmeleri.
+- Eklenen dosya doğrudan bu listeye girer ve aramada kullanılır.
+- `Tümünü işaretle` / `İşaretleri kaldır` toplu seçim.
+- Listeden çoklu satır seçip `Seçilileri arşive ekle` ya da
+  `Seçilileri sil (toplu)` kullanılabilir.
+
+### Döküman arşivi
+
+- Daha önce kullanılmış kaynaklar burada tutulur; veritabanında saklanır.
+- Arşivden bir kaynağı üstteki listeye sürükleyip bırakarak ya da seçip
+  `Aramaya ekle` düğmesiyle alabilirsiniz.
+- `Seçilileri arşivden çıkar` kaynağı arşivden çıkarır.
+- Bir kaynak ya aramada ya arşivde bulunur; iki listede birden görünmez.
+
+### Aynı isimde dosya engeli
+
+- Arşivde aynı isimde bir kaynak varsa ekleme engellenir.
+- Aynı içerikli dosya yeniden eklenirse kopya oluşmaz; mevcut kayıt kullanılır.
+- Farklı içerikli ama aynı isimli dosyada yeniden adlandırma penceresi açılır.
+  Önerilen ad (`rapor (2).pdf` gibi) hazır gelir; yeni ad girilmeden işlem sürmez.
+
+### Arama kapsamı
+
+- Arama yalnızca işaretli kaynaklarda yapılır.
+- İşaretli kaynaklar silindiğinde seçim, arama boş dönmesin diye kalan
+  kaynaklara düşer.
+
+### Teknik
+
+- `documents` tablosuna `in_study` ve `in_archive` sütunları eklendi. Eski
+  veritabanları yükseltmede çalışma listesine taşınır; kullanıcının aramaları
+  boş dönmez.
+- Ad karşılaştırması Türkçe küçük harfe göre yapılır: "RAPOR.PDF" ile
+  "rapor.pdf" aynı sayılır.
+- Ad çakışması mantığı `library.py` içinde, arayüzden bağımsız tutulur.
+
+### Testler
+
+Test sayısı 133'ten **169'a** çıktı (2 test ortama bağlı olarak atlanır).
+Kütüphane adlandırma kuralları, ad/içerik çakışması, yeniden adlandırmayla
+çözüm, çalışma-arşiv ayrımı ve toplu silme sonrası seçim tutarlılığı sınanır.
+Ayrıca `test_ai_helper` içindeki taklit vektör üreteci, süreç başına
+rastgeleleştirilen `hash()` yerine `crc32` kullanacak biçimde düzeltildi; test
+aralıklı olarak başarısız oluyordu.
+
 ## Sürüm 3.0
 
 Arayüz artık tek ekran değil, adım adım ilerleyen bir akış. Üstte adım

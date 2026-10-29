@@ -101,6 +101,17 @@ def _migrate_schema(con):
     cols = {row["name"] for row in con.execute("PRAGMA table_info(documents)")}
     if "source_url" not in cols:
         con.execute("ALTER TABLE documents ADD COLUMN source_url TEXT DEFAULT ''")
+    added = False
+    if "in_study" not in cols:
+        con.execute("ALTER TABLE documents ADD COLUMN in_study INTEGER DEFAULT 0")
+        added = True
+    if "in_archive" not in cols:
+        con.execute("ALTER TABLE documents ADD COLUMN in_archive INTEGER DEFAULT 0")
+        added = True
+    if added:
+        # Eski kayıtlar hem aramaya açık hem arşivde sayılır; böylece
+        # yükseltmeden sonra kullanıcının aramaları boş dönmez.
+        con.execute("UPDATE documents SET in_study=1, in_archive=1")
 
 def _setup_fts(con):
     """Türkçe katlanmış metin üzerinde FTS5 indeksi.
@@ -163,6 +174,64 @@ def list_documents():
         FROM documents d LEFT JOIN chunks c ON c.document_id=d.id
         GROUP BY d.id ORDER BY d.added_at DESC
         """).fetchall()
+
+
+_DOC_WITH_CHUNKS = """
+SELECT d.*, COUNT(c.id) AS chunk_count
+FROM documents d LEFT JOIN chunks c ON c.document_id=d.id
+WHERE {where}
+GROUP BY d.id ORDER BY d.added_at DESC
+"""
+
+
+def list_study_documents():
+    """Geçerli çalışmaya alınmış kaynaklar (1. adımın üst bölümü)."""
+    with db() as con:
+        return con.execute(_DOC_WITH_CHUNKS.format(where="d.in_study=1")).fetchall()
+
+
+def list_archive_documents():
+    """Arşivdeki kaynaklar (1. adımın alt bölümü).
+
+    Çalışma listesindeki bir kayıt arşivde de işaretliyse (eski veritabanı
+    yükseltmesi) yalnızca üst listede gösterilir; iki listede birden görünmez.
+    """
+    with db() as con:
+        return con.execute(
+            _DOC_WITH_CHUNKS.format(where="d.in_archive=1 AND d.in_study=0")).fetchall()
+
+
+def document_names():
+    """Ad çakışması denetimi için kimlik/ad/içerik özeti listesi."""
+    with db() as con:
+        return [dict(row) for row in con.execute("SELECT id, name, sha256 FROM documents")]
+
+
+def set_in_study(doc_ids, flag=True):
+    """Kaynakları çalışma listesine ekler ya da çıkarır."""
+    ids = list(doc_ids)
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    with db() as con:
+        con.execute(f"UPDATE documents SET in_study=? WHERE id IN ({placeholders})",
+                    [1 if flag else 0, *ids])
+
+
+def set_in_archive(doc_ids, flag=True):
+    """Kaynakları arşive ekler ya da çıkarır."""
+    ids = list(doc_ids)
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    with db() as con:
+        con.execute(f"UPDATE documents SET in_archive=? WHERE id IN ({placeholders})",
+                    [1 if flag else 0, *ids])
+
+
+def rename_document(doc_id, new_name):
+    with db() as con:
+        con.execute("UPDATE documents SET name=? WHERE id=?", (new_name, doc_id))
 
 def list_searches():
     with db() as con:

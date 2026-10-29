@@ -44,3 +44,22 @@ def scope_text(scope, total):
     if not scope:
         return "hiçbir kaynak (en az bir kaynak seçin)"
     return f"{len(scope)}/{total} kaynak seçili"
+
+
+def selection_after_delete(active, deleted, remaining):
+    """Toplu silmeden sonra arama seçimini tutarlı tutar.
+
+    Silinen kimlikler seçimden çıkarılır. Kullanıcı bilinçli olarak bir seçim
+    yapmış ve bu seçim silmeyle tamamen boşalmışsa, arama sessizce boş dönmesin
+    diye tüm kalan kaynaklara (None) düşülür. Kullanıcı zaten "hiçbiri" demişse
+    (boş liste) bu korunur.
+    """
+    if active is None:
+        return None
+    remaining_set = set(remaining)
+    kept = [i for i in active if i not in set(deleted) and i in remaining_set]
+    if kept:
+        return kept
+    if active:                      # seçim silmeyle boşaldı
+        return None if remaining else []
+    return []                       # kullanıcı bilinçli olarak hiçbiri demişti

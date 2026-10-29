@@ -1,11 +1,18 @@
 # BİLGİ ARAŞTIRMA — Tam Windows Paketi
 
-Sürüm 3.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
+Sürüm 4.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
 
 ## Özellikler
 - **Adım adım akış:** Arayüz üç adıma bölünmüştür; üstte adım göstergesi,
   altta `Geri` / `İleri` düğmeleri. Aynı anda tek adım görünür.
   1. Kaynak ekle ve seç, 2. Ara, 3. Sonuç ve rapor.
+- **Döküman arşivi:** 1. adım iki bölümden oluşur. Yeni döküman ekle bölümünde
+  yeni çalışma için kaynak eklenir; döküman arşivi bölümünde daha önce
+  kullanılmış kaynaklar veritabanında tutulur. Arşivden sürükle-bırak ile ya da
+  `Aramaya ekle` düğmesiyle kaynak alınır.
+- **Aynı isim engeli:** Aynı isimde bir kaynak varsa ekleme engellenir ve
+  yeniden adlandırma penceresi açılır. Aynı içerikli dosya ikinci kez eklenirse
+  kopya oluşmaz.
 - **Menü çubuğu:** Dosya, Ara, Kaynaklar, Rapor, Görünüm ve Yardım menüleriyle
   tüm işlemler tek yerde; klavye kısayolları eşlenmiştir.
 - **Oluşturulan raporlar:** `Raporlar` sekmesinde üretilen tüm raporlar (PDF,
@@ -92,7 +99,7 @@ kısayollarına basabilirsiniz.
 
 | Adım | İçerik |
 |---|---|
-| 1 · Kaynak ekle ve seç | Kaynak ekleme düğmeleri, tam genişlikte kaynak listesi (`Aramada` sütunu), `Tümü`/`Hiçbiri`, seçim özeti |
+| 1 · Kaynak ekle ve seç | İki bölüm: **Yeni döküman ekle** (kaynak ekleme, `Aramada` sütunu, `Tümünü işaretle`/`İşaretleri kaldır`, `Seçilileri arşive ekle`, `Seçilileri sil`) ve **Döküman arşivi** (eski kaynaklar, `Aramaya ekle`, `Seçilileri arşivden çıkar`) |
 | 2 · Ara | **Sorgu ve sonuçlar** sekmesi (sorgu, arama, ayarlar, sonuç tablosu) ve **Son aramalar** sekmesi |
 | 3 · Sonuç ve rapor | **Kaynak metni ve not** sekmesi (konu notu, rapor üretme) ve **Raporlar** sekmesi |
 
@@ -106,7 +113,7 @@ Uygulamanın üstünde bir menü çubuğu bulunur.
 |---|---|
 | Dosya | Kaynak ekle, girdi kaynağından al, yedek oluştur, çıkış |
 | Ara | Ara, akıllı ara, sorguyu temizle, son aramalar |
-| Kaynaklar | Tüm kaynakları aramaya dâhil et, hiçbirini kullanma, kaynak sil, kaynak dosyayı aç |
+| Kaynaklar | Tümünü/ hiçbirini işaretle, arşive ekle, arşivden aramaya ekle, arşivden çıkar, toplu sil, kaynak dosyayı aç |
 | Rapor | Raporlar sekmesini aç, PDF/Word/TXT/CSV raporu üret, konu notunu arşivle |
 | Görünüm | Adımlar arasında geçiş (1/2/3), ayarlar |
 | Yardım | Hakkında (sürüm bilgisi) |
@@ -114,12 +121,39 @@ Uygulamanın üstünde bir menü çubuğu bulunur.
 Kısayollar: `Ctrl+O` kaynak ekle, `Ctrl+G` girdi kaynağı, `Ctrl+Enter` ara,
 `Ctrl+Shift+Enter` akıllı ara, `Ctrl+1/2/3` adımlar, `Ctrl+R` raporlar, `Ctrl+Q` çıkış.
 
+## Kaynak ekleme ve döküman arşivi
+1. adım iki bölümden oluşur.
+
+**Yeni döküman ekle.** Yeni bir çalışma için kaynak eklediğiniz bölüm. `＋ Kaynak
+ekle…` ile dosya seçer, `Girdi kaynağından al…` ile dökümandan/resimden/ekrandan/web
+adresinden metin alırsınız. Eklenen kaynak bu listeye girer ve aramada kullanılır.
+
+**Döküman arşivi.** Daha önce kullanılmış kaynaklar veritabanında burada tutulur.
+Arşivden bir kaynağı üstteki listeye sürükleyip bırakabilir ya da seçip
+`Aramaya ekle` düğmesini kullanabilirsiniz. `Seçilileri arşivden çıkar` kaynağı
+arşiv listesinden kaldırır. Bir kaynak ya aramada ya arşivde bulunur; iki listede
+birden görünmez.
+
+### Aynı isimde dosya
+Arşivde aynı isimde bir kaynak varsa ekleme engellenir ve yeniden adlandırma
+penceresi açılır. Önerilen ad (`rapor (2).pdf` gibi) hazır gelir; yeni ad
+girilmeden işlem sürmez. Aynı içerikli dosya ikinci kez eklenirse kopya oluşmaz;
+mevcut kayıt kullanılır. Ad karşılaştırması Türkçe küçük harfe göre yapılır, yani
+`RAPOR.PDF` ile `rapor.pdf` aynı sayılır.
+
+### Toplu işlemler
+Her iki listede de birden çok satır seçebilirsiniz (`Ctrl` veya `Shift` ile).
+`Seçilileri arşive ekle`, `Seçilileri sil (toplu)` ve `Seçilileri arşivden çıkar`
+seçili tüm satırlara uygulanır.
+
 ## Kaynak seçimi (birden fazla kaynakta arama)
-1. adımdaki kaynak listesinde `Aramada` sütunu bulunur. Bir kaynağın önündeki
+Yeni döküman ekle listesinde `Aramada` sütunu bulunur. Bir kaynağın önündeki
 `✓` işaretine tıklayarak onu aramaya dâhil edebilir ya da çıkarabilirsiniz.
-`Tümü` ve `Hiçbiri` düğmeleri toplu seçim yapar. Yalnızca işaretli kaynaklarda
-arama yapılır; seçim ayarlara kaydedilir. Hiçbir kaynak seçili değilken arama
-başlatılırsa uyarı verilir. Akıllı arama da aynı seçime uyar.
+`Tümünü işaretle` ve `İşaretleri kaldır` düğmeleri toplu seçim yapar. Yalnızca
+işaretli kaynaklarda arama yapılır; seçim ayarlara kaydedilir. Hiçbir kaynak
+seçili değilken arama başlatılırsa uyarı verilir. Akıllı arama da aynı seçime
+uyar. İşaretli kaynaklar silinirse seçim, arama boş dönmesin diye kalan
+kaynaklara düşer.
 
 ## Oluşturulan raporlar
 Rapor ürettiğinizde (PDF, Word, TXT, CSV, konu notu, yedek) dosya `exports/`

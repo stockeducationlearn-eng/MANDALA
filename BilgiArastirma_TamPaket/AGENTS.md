@@ -92,15 +92,34 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
   boş liste = hiçbiri (kullanıcı uyarılır), liste = yalnızca o belgeler. Seçili
   belgelerin tümü silinirse `resolve_scope` `None` döndürür, böylece arama çıkmaz
   sokakta kalmaz. Bu mantığı app.py'ye gömmeden `scope.py` içinde tutun.
+- **Çalışma / arşiv ayrımı:** `documents.in_study` aramada kullanılacak kaynakları,
+  `documents.in_archive` arşivdekileri belirtir. `database.list_study_documents()` ve
+  `list_archive_documents()` birbirini dışlar: arşiv sorgusu `in_study=0` koşulunu da
+  taşır, böylece eski bir kayıt iki listede birden görünmez. Bir kaynağı arşive
+  taşırken `set_in_archive(..., True)` ile birlikte `set_in_study(..., False)`
+  çağrılmalı; tersi için de aynısı geçerlidir.
+- **Ad çakışması:** Arşivde aynı isimde iki döküman bulunmaz. Karar mantığı
+  `library.py` içindedir (`find_conflict`, `is_identical`, `suggest_name`); `ingest.py`
+  bunu `NameConflictError` / `DuplicateError` hâline getirir. Aynı içerik (`sha256`)
+  yeniden eklenirse kopya oluşmaz, mevcut kayıt döndürülür. Ad karşılaştırması
+  `normalize_name` ile Türkçe küçük harfe indirilir; `str.lower()` kullanmayın.
+  Yeniden adlandırma diyaloğu (`RenameDialog`) yalnızca ana iş parçacığında açılır;
+  arka planda çalışan `add_sources` bunun için `_ask_rename` köprüsünü kullanır.
+- **Toplu silme:** `delete_selected_ids` sonrası arama seçimi `scope.selection_after_delete`
+  ile düzeltilir; seçili kaynakların tümü silinirse seçim kalanlara düşer ki arama
+  sessizce boş dönmesin.
 - **Arayüz kablolaması:** Menü, adım ve tablo sütunlarını değiştirdiğinizde
   `tests/test_app_ui.py` içindeki sahte Tk katmanını da güncelleyin; bu testler
   penceresiz ortamda kurulumu doğrular.
 - **Adım akışı:** `_build_ui` üç adım çerçevesini (`_build_step_sources`,
   `_build_step_search`, `_build_step_result`) `self.step_frames` listesine ekler;
-  `show_step(n)` yalnızca birini `pack` eder. Yeni bir ekran eklerken aynı kalıbı
-  izleyin ve adım düğmesi metnini `refresh_step_hints` içinde güncelleyin.
-  Widget'ları adım dışına taşımayın; `self.doc_tree`, `self.result_tree` gibi
-  alanlar kurulum sırasında oluşturulmalı, çünkü menü ve kısayollar onlara erişir.
+  `show_step(n)` yalnızca birini `pack` eder. 1. adım iki `LabelFrame` içerir:
+  `study_section` (yeni çalışma) ve döküman arşivi. Sürükle-bırak `winfo_containing`
+  ile bırakma noktasını bulur; testler `_archive_drag_drop`'u doğrudan çağırır.
+  Widget'ları adım dışına taşımayın; `self.doc_tree`, `self.archive_tree`,
+  `self.result_tree` gibi alanlar kurulum sırasında oluşturulmalı, çünkü menü ve
+  kısayollar onlara erişir. Kullanıcıya görünen işlemlerin kimlik alan sürümlerini
+  (`*_from_ids`, `*_ids`) ayırın; böylece hem menü hem test tek kod yolunu kullanır.
 - **Rapor listesi:** `exporter.list_reports()` dosya sistemini tek kaynak kabul eder,
   ayrıca veritabanı kaydı tutmaz. `EXPORT_DIR` monkeypatch ile değiştirilebilir.
 - **Sürüm:** `app.py` içindeki `APP_VERSION` sabiti pencere başlığında, üst şeritte ve

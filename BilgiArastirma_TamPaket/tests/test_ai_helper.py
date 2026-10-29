@@ -3,6 +3,7 @@ import json
 import socket
 import threading
 import time
+import zlib
 
 import pytest
 
@@ -31,12 +32,14 @@ class _OllamaHandler(http.server.BaseHTTPRequestHandler):
 
         Testte benzerlik sırası denetlenebilsin diye kelime içerikleri
         vektöre yansıtılır: aynı kelimeleri paylaşan metinler yakın vektör alır.
+        `hash()` yerine crc32 kullanılır; `hash()` süreç başına rastgeleleştirildiği
+        için testler aralıklı olarak başarısız oluyordu.
         """
         words = [w for w in text.lower().split() if w]
         dims = 8
         vector = [0.0] * dims
         for word in words:
-            vector[hash(word) % dims] += 1.0
+            vector[zlib.crc32(word.encode("utf-8")) % dims] += 1.0
         if not any(vector):
             vector[0] = 1.0
         return vector

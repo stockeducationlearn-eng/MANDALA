@@ -5,14 +5,15 @@ import threading, os, json, sys, subprocess, traceback
 
 import database
 from database import db
-from ingest import add_file
+from ingest import add_file, NameConflictError
 from search_engine import (search, MATCH_CHOICES, match_from_label,
                            label_from_settings)
 from ai_helper import (explain_with_ollama, expand_query, rank_by_relevance,
                        check_ollama, OllamaError, rank_by_embedding, filter_by_score)
 from exporter import (export_csv, export_results, backup_project,
                       list_reports, human_size)
-from scope import resolve_scope, toggle_selection, scope_text
+from scope import (resolve_scope, toggle_selection, scope_text,
+                   selection_after_delete)
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -20,7 +21,7 @@ SETTINGS = DATA / "settings.json"
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-APP_VERSION = "3.0"
+APP_VERSION = "4.0"
 
 class App(tk.Tk):
     def __init__(self):
@@ -134,7 +135,7 @@ class App(tk.Tk):
 
     def refresh_step_hints(self):
         """Adım düğmelerinde kısa durum bilgisi (kaynak ve sonuç sayısı) gösterir."""
-        docs = len(database.list_documents())
+        docs = len(database.list_study_documents())
         self.step_buttons[0].configure(text=f"1 · Kaynak ekle ve seç ({docs})")
         self.step_buttons[2].configure(text=f"3 · Sonuç ve rapor ({len(self.last_results)})")
 
@@ -143,38 +144,73 @@ class App(tk.Tk):
         self.step_frames.append(frame)
         ttk.Label(frame, text="1. ADIM — KAYNAK EKLE VE SEÇ",
                   font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="Kaynak dosyalarınızı ekleyin; aramaya dâhil etmek istediklerinizi "
-                              "listeden işaretleyin.",
-                  foreground="#555").pack(anchor="w", pady=(2, 10))
-        add = ttk.Frame(frame)
+        ttk.Label(frame, text="Yeni bir çalışma için kaynak ekleyin; aramada kullanmak istediklerinizi "
+                              "işaretleyin. Arşivdeki eski kaynakları üst listeye sürükleyerek alabilirsiniz.",
+                  foreground="#555").pack(anchor="w", pady=(2, 8))
+
+        # --- Üst bölüm: yeni çalışma (arama kapsamı) -----------------------
+        study = ttk.LabelFrame(frame, text=" YENİ DÖKÜMAN EKLE — aramada kullanılacak kaynaklar ",
+                               padding=8)
+        study.pack(fill="both", expand=True)
+        self.study_section = study
+        add = ttk.Frame(study)
         add.pack(fill="x")
-        ttk.Button(add, text="＋ Kaynak ekle", command=self.add_sources).pack(side="left")
-        ttk.Button(add, text="Girdi kaynağından al…", command=self.open_input_dialog).pack(side="left", padx=6)
-        ttk.Button(add, text="Tümü", width=8,
+        ttk.Button(add, text="＋ Kaynak ekle…", command=self.add_sources).pack(side="left")
+        ttk.Button(add, text="Girdi kaynağından al…",
+                   command=self.open_input_dialog).pack(side="left", padx=6)
+        ttk.Button(add, text="Tümünü işaretle", width=16,
                    command=lambda: self.set_all_documents(True)).pack(side="right")
-        ttk.Button(add, text="Hiçbiri", width=10,
+        ttk.Button(add, text="İşaretleri kaldır", width=17,
                    command=lambda: self.set_all_documents(False)).pack(side="right", padx=4)
-        ttk.Label(frame, text="'Aramada' sütununa tıklayarak kaynağı aramaya dâhil edin ya da çıkarın. "
-                              "Seçim kalıcıdır.",
-                  foreground="#555").pack(anchor="w", pady=(6, 0))
-        self.doc_tree = ttk.Treeview(frame, columns=("use", "type", "chunks"),
-                                     show="tree headings", height=16)
+        ttk.Label(study, text="'Aramada' sütununa tıklayarak kaynağı işaretleyin. Arama yalnızca "
+                              "işaretli kaynaklarda yapılır. Satırları çoklu seçip alttaki düğmeleri kullanın.",
+                  foreground="#555", wraplength=1100, justify="left").pack(anchor="w", pady=(6, 0))
+        self.doc_tree = ttk.Treeview(study, columns=("use", "type", "chunks"),
+                                     show="tree headings", height=9, selectmode="extended")
         self.doc_tree.heading("#0", text="Belge")
         self.doc_tree.heading("use", text="Aramada")
         self.doc_tree.heading("type", text="Tür")
         self.doc_tree.heading("chunks", text="Bölüm")
-        self.doc_tree.column("#0", width=360)
+        self.doc_tree.column("#0", width=430)
         self.doc_tree.column("use", width=80, anchor="center")
-        self.doc_tree.column("type", width=70)
+        self.doc_tree.column("type", width=80)
         self.doc_tree.column("chunks", width=70)
-        self.doc_tree.pack(fill="both", expand=True, pady=8)
+        self.doc_tree.pack(fill="both", expand=True, pady=6)
         self.doc_tree.bind("<Button-1>", self.on_doc_click)
-        bottom = ttk.Frame(frame)
-        bottom.pack(fill="x")
-        ttk.Button(bottom, text="Seçili kaynağı sil", command=self.delete_selected).pack(side="left")
+        doc_btns = ttk.Frame(study)
+        doc_btns.pack(fill="x")
+        ttk.Button(doc_btns, text="Seçilileri arşive ekle",
+                   command=self.archive_selected).pack(side="left")
+        ttk.Button(doc_btns, text="Seçilileri sil (toplu)",
+                   command=self.delete_selected).pack(side="left", padx=5)
         self.scope_summary_var = tk.StringVar(value="")
-        ttk.Label(bottom, textvariable=self.scope_summary_var,
+        ttk.Label(doc_btns, textvariable=self.scope_summary_var,
                   foreground="#555").pack(side="right")
+
+        # --- Alt bölüm: döküman arşivi -------------------------------------
+        arch = ttk.LabelFrame(frame, text=" DÖKÜMAN ARŞİVİ — daha önce kullanılan kaynaklar ",
+                              padding=8)
+        arch.pack(fill="both", expand=True, pady=(8, 0))
+        head = ttk.Frame(arch)
+        head.pack(fill="x")
+        ttk.Label(head, text="Sürükleyip yukarıdaki listeye bırakın ya da seçip "
+                             "'Aramaya ekle' düğmesini kullanın.",
+                  foreground="#555").pack(side="left")
+        ttk.Button(head, text="Aramaya ekle",
+                   command=self.add_archive_selected_to_study).pack(side="right")
+        self.archive_tree = ttk.Treeview(arch, columns=("type", "chunks"),
+                                         show="tree headings", height=8, selectmode="extended")
+        self.archive_tree.heading("#0", text="Belge")
+        self.archive_tree.heading("type", text="Tür")
+        self.archive_tree.heading("chunks", text="Bölüm")
+        self.archive_tree.column("#0", width=500)
+        self.archive_tree.column("type", width=80)
+        self.archive_tree.column("chunks", width=70)
+        self.archive_tree.pack(fill="both", expand=True, pady=6)
+        self.archive_tree.bind("<ButtonPress-1>", self._archive_drag_start)
+        self.archive_tree.bind("<ButtonRelease-1>", self._archive_drag_drop)
+        ttk.Button(arch, text="Seçilileri arşivden çıkar",
+                   command=self.remove_archive_selected).pack(side="left")
 
     def _build_step_search(self):
         frame = ttk.Frame(self)
@@ -318,7 +354,11 @@ class App(tk.Tk):
         kaynak.add_command(label="Tüm kaynakları aramaya dâhil et", command=lambda: self.set_all_documents(True))
         kaynak.add_command(label="Hiçbir kaynağı kullanma", command=lambda: self.set_all_documents(False))
         kaynak.add_separator()
-        kaynak.add_command(label="Seçili kaynağı sil", command=self.delete_selected)
+        kaynak.add_command(label="Seçilileri arşive ekle", command=self.archive_selected)
+        kaynak.add_command(label="Arşivden aramaya ekle", command=self.add_archive_selected_to_study)
+        kaynak.add_command(label="Seçilileri arşivden çıkar", command=self.remove_archive_selected)
+        kaynak.add_separator()
+        kaynak.add_command(label="Seçilileri sil (toplu)", command=self.delete_selected)
         kaynak.add_command(label="Kaynak dosyayı aç", command=self.open_source)
         menubar.add_cascade(label="Kaynaklar", menu=kaynak)
 
@@ -486,20 +526,46 @@ class App(tk.Tk):
                        ("Tüm dosyalar", "*.*")]
         )
         if not paths: return
-        self.status_var.set("Kaynaklar arşive ekleniyor ve metinleri çıkarılıyor…")
+        self.status_var.set("Kaynaklar ekleniyor ve metinleri çıkarılıyor…")
         self.configure(cursor="watch")
         def worker():
             msgs = []
             for p in paths:
                 try:
-                    _, msg = add_file(p, self.settings.get("tesseract_path", ""), self.settings.get("ocr_lang", "tur+eng"))
+                    _, msg = add_file(p, self.settings.get("tesseract_path", ""),
+                                      self.settings.get("ocr_lang", "tur+eng"))
                     msgs.append(f"{Path(p).name}: {msg}")
+                except NameConflictError as exc:
+                    # Aynı adda kayıt var: yeniden adlandırma diyaloğu ana iş
+                    # parçacığında açılmalı, bu yüzden kararı oraya taşırız.
+                    new_name = self._ask_rename(exc)
+                    if not new_name:
+                        msgs.append(f"{Path(p).name}: işlem iptal edildi.")
+                        continue
+                    try:
+                        _, msg = add_file(p, self.settings.get("tesseract_path", ""),
+                                          self.settings.get("ocr_lang", "tur+eng"),
+                                          display_name=new_name)
+                        msgs.append(f"{Path(p).name} → {new_name}: {msg}")
+                    except Exception as exc2:
+                        msgs.append(f"{Path(p).name}: HATA - {exc2}")
                 except Exception as exc:
                     msgs.append(f"{Path(p).name}: HATA - {exc}")
                     with open(LOG_DIR / "errors.log", "a", encoding="utf-8") as log:
                         log.write(traceback.format_exc() + "\n")
             self.after(0, lambda: self.finish_ingest(msgs))
         threading.Thread(target=worker, daemon=True).start()
+
+    def _ask_rename(self, conflict):
+        """Ana iş parçacığından yeniden adlandırma diyaloğunu çalıştırır."""
+        result = {}
+        done = threading.Event()
+        def ask():
+            result["name"] = self._rename_conflict(conflict)
+            done.set()
+        self.after(0, ask)
+        done.wait(timeout=600)
+        return result.get("name")
 
     def finish_ingest(self, msgs):
         self.configure(cursor="")
@@ -508,13 +574,19 @@ class App(tk.Tk):
         messagebox.showinfo("Kaynak ekleme", "\n".join(msgs[:30]))
 
     def refresh_documents(self):
+        """Her iki listeyi (yeni çalışma ve arşiv) tazeler."""
         self.doc_tree.delete(*self.doc_tree.get_children())
         active = self.settings.get("active_document_ids")
-        for d in database.list_documents():
+        for d in database.list_study_documents():
             mark = "✓" if active is None or d["id"] in active else ""
             self.doc_tree.insert("", "end", iid=str(d["id"]), text=d["name"],
                                  values=(mark, d["file_type"], d["chunk_count"]))
-        self.scope_summary_var.set(f"Aramaya dâhil: {self.active_scope_text()}")
+        self.archive_tree.delete(*self.archive_tree.get_children())
+        for d in database.list_archive_documents():
+            self.archive_tree.insert("", "end", iid=str(d["id"]), text=d["name"],
+                                     values=(d["file_type"], d["chunk_count"]))
+        self.scope_summary_var.set(
+            f"Aramada: {self.active_scope_text()} · Arşivde: {len(database.list_archive_documents())} kaynak")
         self.refresh_step_hints()
 
     def on_doc_click(self, event):
@@ -532,7 +604,7 @@ class App(tk.Tk):
     def toggle_document(self, doc_id):
         self.settings["active_document_ids"] = toggle_selection(
             self.settings.get("active_document_ids"),
-            [d["id"] for d in database.list_documents()], doc_id)
+            [d["id"] for d in database.list_study_documents()], doc_id)
         self.save_settings_file()
         self.refresh_documents()
         self.status_var.set(f"Aramaya dâhil kaynak: {self.active_scope_text()}")
@@ -546,23 +618,114 @@ class App(tk.Tk):
     def active_document_ids(self):
         """Aramada kullanılacak belge kimlikleri; None ise tümü."""
         return resolve_scope(self.settings.get("active_document_ids"),
-                             [d["id"] for d in database.list_documents()])
+                             [d["id"] for d in database.list_study_documents()])
 
     def active_scope_text(self):
-        return scope_text(self.active_document_ids(), len(database.list_documents()))
+        return scope_text(self.active_document_ids(), len(database.list_study_documents()))
+
+    # --- Arşiv <-> çalışma listesi --------------------------------------
+
+    def add_archive_selected_to_study(self, doc_ids=None):
+        """Arşivdeki kaynakları aramaya ekler (çalışma listesine alır)."""
+        ids = doc_ids if doc_ids is not None else self._selected_ids(self.archive_tree)
+        if not ids:
+            messagebox.showinfo("Döküman arşivi",
+                                "Önce arşivden bir kaynak seçin ya da sürükleyip yukarı bırakın.")
+            return
+        # Kaynak ya aramada ya arşivde bulunur; iki listede birden görünmez.
+        database.set_in_study(ids, True)
+        database.set_in_archive(ids, False)
+        # Yeni eklenenler aramada işaretli olsun.
+        current = self.settings.get("active_document_ids")
+        if current is not None:
+            for i in ids:
+                if i not in current:
+                    current.append(i)
+            self.save_settings_file()
+        self.refresh_documents()
+        self.status_var.set(f"{len(ids)} kaynak aramaya eklendi.")
+
+    def archive_selected(self):
+        """Çalışma listesindeki kaynakları arşive taşır."""
+        return self.archive_selected_from_ids(self._selected_ids(self.doc_tree))
+
+    def archive_selected_from_ids(self, ids):
+        if not ids:
+            messagebox.showinfo("Arşive ekle", "Önce üst listeden en az bir kaynak seçin.")
+            return
+        database.set_in_archive(ids, True)
+        database.set_in_study(ids, False)
+        self.refresh_documents()
+        self.status_var.set(f"{len(ids)} kaynak arşive eklendi.")
+
+    def remove_archive_selected(self):
+        """Seçili kaynakları arşivden çıkarır (arşiv listesinden kaldırır)."""
+        return self.remove_archive_selected_from_ids(self._selected_ids(self.archive_tree))
+
+    def remove_archive_selected_from_ids(self, ids):
+        if not ids:
+            messagebox.showinfo("Arşivden çıkar", "Önce arşivden en az bir kaynak seçin.")
+            return
+        database.set_in_archive(ids, False)
+        self.refresh_documents()
+        self.status_var.set(f"{len(ids)} kaynak arşivden çıkarıldı.")
+
+    # --- Sürükle-bırak: arşivden aramaya --------------------------------
+
+    def _archive_drag_start(self, event):
+        """Arşiv listesinde basılan satırı sürükleme adayı olarak işaretler."""
+        self._drag_ids = self._selected_ids(self.archive_tree) or (
+            [int(self.archive_tree.identify_row(event.y))]
+            if self.archive_tree.identify_row(event.y) else [])
+
+    def _archive_drag_drop(self, event):
+        """Bırakma noktası üst listedeyse seçili arşiv kaynaklarını ekler."""
+        ids = getattr(self, "_drag_ids", [])
+        self._drag_ids = []
+        if not ids:
+            return
+        target = self.winfo_containing(event.x_root, event.y_root)
+        if target is self.doc_tree or self._is_descendant(target, self.study_section):
+            self.add_archive_selected_to_study(ids)
+
+    @staticmethod
+    def _is_descendant(widget, ancestor):
+        while widget is not None:
+            if widget is ancestor:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    @staticmethod
+    def _selected_ids(tree):
+        return [int(i) for i in tree.selection()]
 
     def delete_selected(self):
-        sel = self.doc_tree.selection()
-        if not sel: return
-        doc_id = int(sel[0])
-        if not messagebox.askyesno("Kaynağı sil", "Kaynağı veritabanından ve arşiv klasöründen silmek istiyor musunuz?"):
+        """Seçili kaynakları toplu olarak siler."""
+        return self.delete_selected_ids(self._selected_ids(self.doc_tree))
+
+    def delete_selected_ids(self, sel):
+        if not sel:
+            messagebox.showinfo("Kaynağı sil", "Önce üst listeden en az bir kaynak seçin.")
             return
-        stored = database.delete_document(doc_id)
-        if stored:
-            try: Path(stored).unlink(missing_ok=True)
-            except Exception: pass
+        if not messagebox.askyesno("Kaynakları sil",
+                                   f"{len(sel)} kaynak veritabanından ve arşiv klasöründen silinsin mi?"):
+            return
+        for doc_id in sel:
+            stored = database.delete_document(doc_id)
+            if stored:
+                try: Path(stored).unlink(missing_ok=True)
+                except Exception: pass
+        remaining = [d["id"] for d in database.list_study_documents()]
+        self.settings["active_document_ids"] = selection_after_delete(
+            self.settings.get("active_document_ids"), sel, remaining)
+        self.save_settings_file()
         self.refresh_documents()
-        self.status_var.set("Kaynak silindi.")
+        self.status_var.set(f"{len(sel)} kaynak silindi.")
+
+    def _rename_conflict(self, conflict):
+        """Ad çakışmasında yeniden adlandırma diyaloğunu açar; yeni adı döndürür."""
+        return RenameDialog(self, conflict).result
 
     def run_search(self):
         q = self.get_query()
@@ -973,6 +1136,58 @@ class App(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+class RenameDialog(tk.Toplevel):
+    """Ad çakışmasında yeni ad isteyen pencere.
+
+    Arşivde aynı isimde bir döküman bulunamaz; kullanıcı yeni bir ad girer
+    ya da işlemi iptal eder. `result` yeni adı (iptalde boş dize) tutar.
+    """
+
+    def __init__(self, parent, conflict):
+        """conflict: ingest.NameConflictError — çakışan kaydı ve öneriyi taşır."""
+        super().__init__(parent)
+        self.title("Aynı isimde kaynak var")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.result = ""
+
+        body = ttk.Frame(self, padding=14)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Bu isimde bir kaynak arşivde zaten var:",
+                  font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(body, text=conflict.conflict["name"], foreground="#a33").pack(anchor="w", pady=(2, 8))
+        ttk.Label(body, text="Devam etmek için yeni bir ad girin. Aynı isimle iki kaynak "
+                             "tutulmaz; bu yüzden işlem yeniden adlandırılmadan sürmez.",
+                  wraplength=420, justify="left", foreground="#555").pack(anchor="w")
+        self.name_var = tk.StringVar(value=conflict.suggestion)
+        entry = ttk.Entry(body, textvariable=self.name_var, width=52)
+        entry.pack(fill="x", pady=(8, 2))
+        entry.focus_set()
+        entry.select_range(0, "end")
+        ttk.Label(body, text="Önerilen ad önceden yazıldı; değiştirebilirsiniz.",
+                  foreground="#555").pack(anchor="w")
+        bar = ttk.Frame(body)
+        bar.pack(fill="x", pady=(12, 0))
+        ttk.Button(bar, text="Yeni adla ekle", command=self._accept).pack(side="right")
+        ttk.Button(bar, text="İptal", command=self._cancel).pack(side="right", padx=6)
+        self.bind("<Return>", lambda _e: self._accept())
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.wait_window()
+
+    def _accept(self):
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Ad gerekli", "Lütfen bir ad girin.", parent=self)
+            return
+        self.result = name
+        self.destroy()
+
+    def _cancel(self):
+        self.result = ""
+        self.destroy()
+
 
 class InputSourceDialog(tk.Toplevel):
     """Girdiyi dökümandan, resimden, ekrandan veya web adresinden alan pencere."""

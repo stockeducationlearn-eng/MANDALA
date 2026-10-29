@@ -273,23 +273,39 @@ def test_report_table_columns(fake_tk, temp_db):
     assert app.report_tree.kwargs["columns"] == ("kind", "size", "modified", "name")
 
 
+def _row_texts(tree):
+    """Treeview satırlarındaki belge adlarını döndürür."""
+    return [row["kwargs"].get("text", "") for row in tree.items]
+
+
+def _insert_doc(db, name, sha=None, in_study=1, in_archive=0, path=None):
+    """Test veritabanına bir kaynak ekler (çalışma/arşiv bayraklarıyla)."""
+    with db.db() as con:
+        con.execute("INSERT INTO documents(name, stored_path, file_type, sha256, added_at, "
+                    "in_study, in_archive) VALUES (?, ?, '.txt', ?, datetime('now','localtime'), ?, ?)",
+                    (name, path or f"/tmp/{name}", sha or name, in_study, in_archive))
+        con.commit()
+    with db.db() as con:
+        return con.execute("SELECT id FROM documents WHERE name=?", (name,)).fetchone()["id"]
+
+
 def test_step_buttons_show_source_count(fake_tk, temp_db):
     app = fake_tk.module.App()
-    with temp_db.db() as con:
-        con.execute("INSERT INTO documents(name, stored_path, file_type, sha256, added_at) "
-                    "VALUES ('a.txt', '/tmp/a.txt', '.txt', 'a', datetime('now','localtime'))")
-        con.commit()
+    _insert_doc(temp_db, "a.txt")
     app.refresh_step_hints()
     label = app.step_buttons[0].configured[-1][1]["text"]
     assert label == "1 · Kaynak ekle ve seç (1)"
 
 
+def test_first_step_has_study_and_archive_sections(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    assert app.study_section is not None
+    assert hasattr(app, "archive_tree")
+
+
 def test_refresh_documents_marks_all_selected_by_default(fake_tk, temp_db):
     app = fake_tk.module.App()
-    with temp_db.db() as con:
-        con.execute("INSERT INTO documents(name, stored_path, file_type, sha256, added_at) "
-                    "VALUES ('a.txt', '/tmp/a.txt', '.txt', 'a', datetime('now','localtime'))")
-        con.commit()
+    _insert_doc(temp_db, "a.txt")
     app.refresh_documents()
     values = [row["kwargs"]["values"] for row in app.doc_tree.items]
     assert values and all(v[0] == "✓" for v in values)
@@ -297,16 +313,67 @@ def test_refresh_documents_marks_all_selected_by_default(fake_tk, temp_db):
 
 def test_toggle_document_excludes_one_source(fake_tk, temp_db):
     app = fake_tk.module.App()
-    with temp_db.db() as con:
-        for name in ("a.txt", "b.txt"):
-            con.execute("INSERT INTO documents(name, stored_path, file_type, sha256, added_at) "
-                        "VALUES (?, ?, '.txt', ?, datetime('now','localtime'))",
-                        (name, f"/tmp/{name}", name))
-        con.commit()
-    ids = [d["id"] for d in temp_db.list_documents()]
+    ids = [_insert_doc(temp_db, "a.txt"), _insert_doc(temp_db, "b.txt")]
     app.toggle_document(ids[0])
     assert app.active_document_ids() == [ids[1]]
     assert "1/2 kaynak seçili" in app.active_scope_text()
+
+
+def test_archive_holds_old_sources_not_in_study(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    _insert_doc(temp_db, "eski.txt", in_study=0, in_archive=1)
+    app.refresh_documents()
+    assert app.doc_tree.items == []
+    assert _row_texts(app.archive_tree) == ["eski.txt"]
+
+
+def test_archive_to_study_moves_source(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    doc_id = _insert_doc(temp_db, "eski.txt", in_study=0, in_archive=1)
+    app.refresh_documents()
+    app.set_all_documents(False)          # arama seçimini sıfırla
+    app.add_archive_selected_to_study([doc_id])
+    assert _row_texts(app.doc_tree) == ["eski.txt"]
+    assert app.archive_tree.items == []
+    assert app.active_document_ids() == [doc_id]
+
+
+def test_archive_selected_marks_document_archived(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    doc_id = _insert_doc(temp_db, "yeni.txt")
+    app.refresh_documents()
+    app.archive_selected_from_ids([doc_id])
+    assert _row_texts(app.archive_tree) == ["yeni.txt"]
+    assert app.doc_tree.items == []
+
+
+def test_remove_archive_selected_clears_flag(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    doc_id = _insert_doc(temp_db, "eski.txt", in_study=0, in_archive=1)
+    app.refresh_documents()
+    app.remove_archive_selected_from_ids([doc_id])
+    assert app.archive_tree.items == []
+
+
+def test_bulk_delete_removes_multiple_sources(fake_tk, temp_db, monkeypatch):
+    app = fake_tk.module.App()
+    ids = [_insert_doc(temp_db, "a.txt"), _insert_doc(temp_db, "b.txt"), _insert_doc(temp_db, "c.txt")]
+    monkeypatch.setattr(fake_tk.module.messagebox, "askyesno", lambda *a, **k: True)
+    app.settings["active_document_ids"] = list(ids)   # üçü de seçili
+    app.refresh_documents()
+    app.delete_selected_ids(ids[:2])
+    assert _row_texts(app.doc_tree) == ["c.txt"]
+    assert app.active_document_ids() == [ids[2]]
+
+
+def test_archive_drop_on_study_area_adds_source(fake_tk, temp_db, monkeypatch):
+    app = fake_tk.module.App()
+    doc_id = _insert_doc(temp_db, "eski.txt", in_study=0, in_archive=1)
+    app.refresh_documents()
+    monkeypatch.setattr(app, "winfo_containing", lambda x, y: app.doc_tree, raising=False)
+    app._drag_ids = [doc_id]
+    app._archive_drag_drop(types.SimpleNamespace(x_root=0, y_root=0))
+    assert _row_texts(app.doc_tree) == ["eski.txt"]
 
 
 def test_search_without_selected_source_warns(fake_tk, temp_db):
