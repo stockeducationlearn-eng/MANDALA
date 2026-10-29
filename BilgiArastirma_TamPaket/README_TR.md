@@ -6,7 +6,7 @@ Sürüm 4.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
 - **Adım adım akış:** Arayüz üç adıma bölünmüştür; üstte adım göstergesi,
   altta `Geri` / `İleri` düğmeleri. Aynı anda tek adım görünür.
   1. Kaynak ekle ve seç, 2. Ara, 3. Sonuç ve rapor.
-- **Döküman arşivi:** 1. adım iki bölümden oluşur. Yeni döküman ekle bölümünde
+- **Döküman arşivi:** 1. adım yan yana iki panelden oluşur. Yeni döküman ekle bölümünde
   yeni çalışma için kaynak eklenir; döküman arşivi bölümünde daha önce
   kullanılmış kaynaklar veritabanında tutulur. Arşivden sürükle-bırak ile ya da
   `Aramaya ekle` düğmesiyle kaynak alınır.
@@ -99,7 +99,7 @@ kısayollarına basabilirsiniz.
 
 | Adım | İçerik |
 |---|---|
-| 1 · Kaynak ekle ve seç | İki bölüm: **Yeni döküman ekle** (kaynak ekleme, `Aramada` sütunu, `Tümünü işaretle`/`İşaretleri kaldır`, `Seçilileri arşive ekle`, `Seçilileri sil`) ve **Döküman arşivi** (eski kaynaklar, `Aramaya ekle`, `Seçilileri arşivden çıkar`) |
+| 1 · Kaynak ekle ve seç | Yan yana iki panel: **Yeni döküman ekle** (kaynak ekleme, `Aramada` sütunu, `Tümünü işaretle`/`İşaretleri kaldır`, `Arşive ekle`, `Sil (toplu)`) ve **Döküman arşivi** (eski kaynaklar, `Aramaya ekle`, `Arşivden çıkar`) |
 | 2 · Ara | **Sorgu ve sonuçlar** sekmesi (sorgu, arama, ayarlar, sonuç tablosu) ve **Son aramalar** sekmesi |
 | 3 · Sonuç ve rapor | **Kaynak metni ve not** sekmesi (konu notu, rapor üretme) ve **Raporlar** sekmesi |
 
@@ -122,15 +122,17 @@ Kısayollar: `Ctrl+O` kaynak ekle, `Ctrl+G` girdi kaynağı, `Ctrl+Enter` ara,
 `Ctrl+Shift+Enter` akıllı ara, `Ctrl+1/2/3` adımlar, `Ctrl+R` raporlar, `Ctrl+Q` çıkış.
 
 ## Kaynak ekleme ve döküman arşivi
-1. adım iki bölümden oluşur.
+1. adım yan yana iki panelden oluşur: solda yeni çalışma kaynakları,
+sağda döküman arşivi. Ortadaki ayırıcıyı sürükleyerek genişlikleri
+ayarlayabilirsiniz.
 
 **Yeni döküman ekle.** Yeni bir çalışma için kaynak eklediğiniz bölüm. `＋ Kaynak
 ekle…` ile dosya seçer, `Girdi kaynağından al…` ile dökümandan/resimden/ekrandan/web
 adresinden metin alırsınız. Eklenen kaynak bu listeye girer ve aramada kullanılır.
 
 **Döküman arşivi.** Daha önce kullanılmış kaynaklar veritabanında burada tutulur.
-Arşivden bir kaynağı üstteki listeye sürükleyip bırakabilir ya da seçip
-`Aramaya ekle` düğmesini kullanabilirsiniz. `Seçilileri arşivden çıkar` kaynağı
+Arşivden bir kaynağı sol paneldeki listeye sürükleyip bırakabilir ya da seçip
+`Aramaya ekle` düğmesini kullanabilirsiniz. `Arşivden çıkar` kaynağı
 arşiv listesinden kaldırır. Bir kaynak ya aramada ya arşivde bulunur; iki listede
 birden görünmez.
 
@@ -143,7 +145,7 @@ mevcut kayıt kullanılır. Ad karşılaştırması Türkçe küçük harfe gör
 
 ### Toplu işlemler
 Her iki listede de birden çok satır seçebilirsiniz (`Ctrl` veya `Shift` ile).
-`Seçilileri arşive ekle`, `Seçilileri sil (toplu)` ve `Seçilileri arşivden çıkar`
+`Arşive ekle`, `Sil (toplu)` ve `Arşivden çıkar`
 seçili tüm satırlara uygulanır.
 
 ## Kaynak seçimi (birden fazla kaynakta arama)

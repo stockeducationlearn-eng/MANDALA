@@ -2,24 +2,23 @@
 
 ## Sürüm 4.0
 
-1. adım iki bölüme ayrıldı ve kaynak yönetimi baştan kuruldu: yeni bir çalışma
-için eklenen kaynaklarla, daha önce kullanılmış kaynakların tutulduğu döküman
-arşivi artık ayrı listeler.
+1. adım yan yana iki panele ayrıldı: solda yeni çalışma kaynakları, sağda döküman
+arşivi. Kaynak yönetimi de baştan kuruldu; yeni bir çalışma için eklenen
+kaynaklarla daha önce kullanılmış kaynaklar artık ayrı listelerde tutulur.
 
-### Yeni döküman ekle
+### Yeni döküman ekle (sol panel)
 
 - `＋ Kaynak ekle…` ve `Girdi kaynağından al…` düğmeleri.
 - Eklenen dosya doğrudan bu listeye girer ve aramada kullanılır.
 - `Tümünü işaretle` / `İşaretleri kaldır` toplu seçim.
-- Listeden çoklu satır seçip `Seçilileri arşive ekle` ya da
-  `Seçilileri sil (toplu)` kullanılabilir.
+- Listeden çoklu satır seçip `Arşive ekle` ya da `Sil (toplu)` kullanılabilir.
 
-### Döküman arşivi
+### Döküman arşivi (sağ panel)
 
 - Daha önce kullanılmış kaynaklar burada tutulur; veritabanında saklanır.
-- Arşivden bir kaynağı üstteki listeye sürükleyip bırakarak ya da seçip
+- Arşivden bir kaynağı sol paneldeki listeye sürükleyip bırakarak ya da seçip
   `Aramaya ekle` düğmesiyle alabilirsiniz.
-- `Seçilileri arşivden çıkar` kaynağı arşivden çıkarır.
+- `Arşivden çıkar` kaynağı arşivden çıkarır.
 - Bir kaynak ya aramada ya arşivde bulunur; iki listede birden görünmez.
 
 ### Aynı isimde dosya engeli
@@ -46,7 +45,7 @@ arşivi artık ayrı listeler.
 
 ### Testler
 
-Test sayısı 133'ten **169'a** çıktı (2 test ortama bağlı olarak atlanır).
+Test sayısı 133'ten **170'e** çıktı (2 test ortama bağlı olarak atlanır).
 Kütüphane adlandırma kuralları, ad/içerik çakışması, yeniden adlandırmayla
 çözüm, çalışma-arşiv ayrımı ve toplu silme sonrası seçim tutarlılığı sınanır.
 Ayrıca `test_ai_helper` içindeki taklit vektör üreteci, süreç başına

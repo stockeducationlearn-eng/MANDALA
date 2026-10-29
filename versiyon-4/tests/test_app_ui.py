@@ -25,6 +25,7 @@ class _Widget:
         self.configured = []     # configure() çağrıları
         self.state_history = []
         self.packed = False      # pack/pack_forget durumu
+        self.master = None       # Panedwindow.add gibi çağrılarda ata
 
     # -- ortak no-op'lar -------------------------------------------------
     def __getattr__(self, name):
@@ -100,9 +101,11 @@ class _Widget:
     def add_separator(self, **k):
         self.menu_items.append(("separator", None, None))
 
-    # -- Notebook ---------------------------------------------------------
+    # -- Notebook / Panedwindow -------------------------------------------
     def add(self, child=None, text=None, **k):
         self.items.append((child, text))
+        if child is not None:
+            child.master = self
 
     def select(self, tab=None):
         self.selected = tab
@@ -301,6 +304,18 @@ def test_first_step_has_study_and_archive_sections(fake_tk, temp_db):
     app = fake_tk.module.App()
     assert app.study_section is not None
     assert hasattr(app, "archive_tree")
+
+
+def test_first_step_panels_are_side_by_side(fake_tk, temp_db):
+    """İki panel yatay Panedwindow içinde yan yana durmalı, alt alta değil."""
+    app = fake_tk.module.App()
+    panes = app.sources_panes
+    assert panes.kwargs.get("orient") == "horizontal"
+    children = [child for child, _text in panes.items]
+    assert app.study_section in children
+    assert any(c is not app.study_section and c is not None for c in children)
+    # Paneller doğrudan adım çerçevesine değil, paned window'a eklenir.
+    assert app.study_section.master is panes
 
 
 def test_refresh_documents_marks_all_selected_by_default(fake_tk, temp_db):

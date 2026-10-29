@@ -144,73 +144,81 @@ class App(tk.Tk):
         self.step_frames.append(frame)
         ttk.Label(frame, text="1. ADIM — KAYNAK EKLE VE SEÇ",
                   font=("Segoe UI", 13, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="Yeni bir çalışma için kaynak ekleyin; aramada kullanmak istediklerinizi "
-                              "işaretleyin. Arşivdeki eski kaynakları üst listeye sürükleyerek alabilirsiniz.",
+        ttk.Label(frame, text="Sol panelde yeni bir çalışma için kaynak ekleyin; aramada kullanmak "
+                              "istediklerinizi işaretleyin. Arşivdeki eski kaynakları sağ panelden "
+                              "sürükleyip sol panele bırakabilirsiniz.",
                   foreground="#555").pack(anchor="w", pady=(2, 8))
 
-        # --- Üst bölüm: yeni çalışma (arama kapsamı) -----------------------
-        study = ttk.LabelFrame(frame, text=" YENİ DÖKÜMAN EKLE — aramada kullanılacak kaynaklar ",
+        # İki panel yan yana; kullanıcı ayırıcıyı sürükleyerek genişliği ayarlar.
+        panes = ttk.Panedwindow(frame, orient="horizontal")
+        panes.pack(fill="both", expand=True)
+        self.sources_panes = panes
+
+        # --- Sol panel: yeni çalışma (arama kapsamı) -----------------------
+        study = ttk.LabelFrame(panes, text=" YENİ DÖKÜMAN EKLE — aramada kullanılacak kaynaklar ",
                                padding=8)
-        study.pack(fill="both", expand=True)
+        panes.add(study, weight=3)
         self.study_section = study
         add = ttk.Frame(study)
         add.pack(fill="x")
         ttk.Button(add, text="＋ Kaynak ekle…", command=self.add_sources).pack(side="left")
         ttk.Button(add, text="Girdi kaynağından al…",
                    command=self.open_input_dialog).pack(side="left", padx=6)
-        ttk.Button(add, text="Tümünü işaretle", width=16,
-                   command=lambda: self.set_all_documents(True)).pack(side="right")
-        ttk.Button(add, text="İşaretleri kaldır", width=17,
-                   command=lambda: self.set_all_documents(False)).pack(side="right", padx=4)
+        marks = ttk.Frame(study)
+        marks.pack(fill="x", pady=(6, 0))
+        ttk.Button(marks, text="Tümünü işaretle", width=16,
+                   command=lambda: self.set_all_documents(True)).pack(side="left")
+        ttk.Button(marks, text="İşaretleri kaldır", width=17,
+                   command=lambda: self.set_all_documents(False)).pack(side="left", padx=6)
         ttk.Label(study, text="'Aramada' sütununa tıklayarak kaynağı işaretleyin. Arama yalnızca "
-                              "işaretli kaynaklarda yapılır. Satırları çoklu seçip alttaki düğmeleri kullanın.",
-                  foreground="#555", wraplength=1100, justify="left").pack(anchor="w", pady=(6, 0))
+                              "işaretli kaynaklarda yapılır.",
+                  foreground="#555", wraplength=520, justify="left").pack(anchor="w", pady=(6, 0))
         self.doc_tree = ttk.Treeview(study, columns=("use", "type", "chunks"),
-                                     show="tree headings", height=9, selectmode="extended")
+                                     show="tree headings", height=14, selectmode="extended")
         self.doc_tree.heading("#0", text="Belge")
         self.doc_tree.heading("use", text="Aramada")
         self.doc_tree.heading("type", text="Tür")
         self.doc_tree.heading("chunks", text="Bölüm")
-        self.doc_tree.column("#0", width=430)
-        self.doc_tree.column("use", width=80, anchor="center")
-        self.doc_tree.column("type", width=80)
-        self.doc_tree.column("chunks", width=70)
+        self.doc_tree.column("#0", width=250)
+        self.doc_tree.column("use", width=70, anchor="center")
+        self.doc_tree.column("type", width=70)
+        self.doc_tree.column("chunks", width=60)
         self.doc_tree.pack(fill="both", expand=True, pady=6)
         self.doc_tree.bind("<Button-1>", self.on_doc_click)
         doc_btns = ttk.Frame(study)
         doc_btns.pack(fill="x")
-        ttk.Button(doc_btns, text="Seçilileri arşive ekle",
+        ttk.Button(doc_btns, text="Arşive ekle",
                    command=self.archive_selected).pack(side="left")
-        ttk.Button(doc_btns, text="Seçilileri sil (toplu)",
+        ttk.Button(doc_btns, text="Sil (toplu)",
                    command=self.delete_selected).pack(side="left", padx=5)
         self.scope_summary_var = tk.StringVar(value="")
         ttk.Label(doc_btns, textvariable=self.scope_summary_var,
                   foreground="#555").pack(side="right")
 
-        # --- Alt bölüm: döküman arşivi -------------------------------------
-        arch = ttk.LabelFrame(frame, text=" DÖKÜMAN ARŞİVİ — daha önce kullanılan kaynaklar ",
+        # --- Sağ panel: döküman arşivi -------------------------------------
+        arch = ttk.LabelFrame(panes, text=" DÖKÜMAN ARŞİVİ — daha önce kullanılan kaynaklar ",
                               padding=8)
-        arch.pack(fill="both", expand=True, pady=(8, 0))
-        head = ttk.Frame(arch)
-        head.pack(fill="x")
-        ttk.Label(head, text="Sürükleyip yukarıdaki listeye bırakın ya da seçip "
-                             "'Aramaya ekle' düğmesini kullanın.",
-                  foreground="#555").pack(side="left")
-        ttk.Button(head, text="Aramaya ekle",
-                   command=self.add_archive_selected_to_study).pack(side="right")
+        panes.add(arch, weight=2)
+        ttk.Label(arch, text="Kaynağı sola sürükleyip bırakın ya da seçip 'Aramaya ekle' "
+                             "düğmesini kullanın.",
+                  foreground="#555", wraplength=360, justify="left").pack(anchor="w")
         self.archive_tree = ttk.Treeview(arch, columns=("type", "chunks"),
-                                         show="tree headings", height=8, selectmode="extended")
+                                         show="tree headings", height=14, selectmode="extended")
         self.archive_tree.heading("#0", text="Belge")
         self.archive_tree.heading("type", text="Tür")
         self.archive_tree.heading("chunks", text="Bölüm")
-        self.archive_tree.column("#0", width=500)
-        self.archive_tree.column("type", width=80)
-        self.archive_tree.column("chunks", width=70)
+        self.archive_tree.column("#0", width=200)
+        self.archive_tree.column("type", width=70)
+        self.archive_tree.column("chunks", width=60)
         self.archive_tree.pack(fill="both", expand=True, pady=6)
         self.archive_tree.bind("<ButtonPress-1>", self._archive_drag_start)
         self.archive_tree.bind("<ButtonRelease-1>", self._archive_drag_drop)
-        ttk.Button(arch, text="Seçilileri arşivden çıkar",
-                   command=self.remove_archive_selected).pack(side="left")
+        arch_btns = ttk.Frame(arch)
+        arch_btns.pack(fill="x")
+        ttk.Button(arch_btns, text="Aramaya ekle",
+                   command=self.add_archive_selected_to_study).pack(side="left")
+        ttk.Button(arch_btns, text="Arşivden çıkar",
+                   command=self.remove_archive_selected).pack(side="left", padx=5)
 
     def _build_step_search(self):
         frame = ttk.Frame(self)
@@ -651,7 +659,7 @@ class App(tk.Tk):
 
     def archive_selected_from_ids(self, ids):
         if not ids:
-            messagebox.showinfo("Arşive ekle", "Önce üst listeden en az bir kaynak seçin.")
+            messagebox.showinfo("Arşive ekle", "Önce soldaki listeden en az bir kaynak seçin.")
             return
         database.set_in_archive(ids, True)
         database.set_in_study(ids, False)
@@ -679,7 +687,7 @@ class App(tk.Tk):
             if self.archive_tree.identify_row(event.y) else [])
 
     def _archive_drag_drop(self, event):
-        """Bırakma noktası üst listedeyse seçili arşiv kaynaklarını ekler."""
+        """Bırakma noktası sol paneldeyse seçili arşiv kaynaklarını ekler."""
         ids = getattr(self, "_drag_ids", [])
         self._drag_ids = []
         if not ids:
@@ -706,7 +714,7 @@ class App(tk.Tk):
 
     def delete_selected_ids(self, sel):
         if not sel:
-            messagebox.showinfo("Kaynağı sil", "Önce üst listeden en az bir kaynak seçin.")
+            messagebox.showinfo("Kaynağı sil", "Önce soldaki listeden en az bir kaynak seçin.")
             return
         if not messagebox.askyesno("Kaynakları sil",
                                    f"{len(sel)} kaynak veritabanından ve arşiv klasöründen silinsin mi?"):

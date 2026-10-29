@@ -113,8 +113,11 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
   penceresiz ortamda kurulumu doğrular.
 - **Adım akışı:** `_build_ui` üç adım çerçevesini (`_build_step_sources`,
   `_build_step_search`, `_build_step_result`) `self.step_frames` listesine ekler;
-  `show_step(n)` yalnızca birini `pack` eder. 1. adım iki `LabelFrame` içerir:
-  `study_section` (yeni çalışma) ve döküman arşivi. Sürükle-bırak `winfo_containing`
+  `show_step(n)` yalnızca birini `pack` eder. 1. adım yatay bir `Panedwindow`
+  (`self.sources_panes`) içinde yan yana iki `LabelFrame` barındırır: solda
+  `study_section` (yeni çalışma, `weight=3`), sağda döküman arşivi (`weight=2`).
+  Panelleri adım çerçevesine doğrudan `pack` etmeyin; `panes.add(...)` kullanın,
+  aksi halde yan yana düzen bozulur. Sürükle-bırak `winfo_containing`
   ile bırakma noktasını bulur; testler `_archive_drag_drop`'u doğrudan çağırır.
   Widget'ları adım dışına taşımayın; `self.doc_tree`, `self.archive_tree`,
   `self.result_tree` gibi alanlar kurulum sırasında oluşturulmalı, çünkü menü ve
