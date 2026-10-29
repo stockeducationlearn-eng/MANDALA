@@ -20,7 +20,7 @@ SETTINGS = DATA / "settings.json"
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-APP_VERSION = "2.0"
+APP_VERSION = "3.0"
 
 class App(tk.Tk):
     def __init__(self):
@@ -65,74 +65,156 @@ class App(tk.Tk):
         try: style.theme_use("clam")
         except Exception: pass
         self._build_menu()
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True)
-        search_tab = ttk.Frame(self.notebook)
-        self.notebook.add(search_tab, text="  Arama  ")
-        top = ttk.Frame(search_tab, padding=10)
+        self._build_header()
+        self._build_stepper()
+        self.step_frames = []
+        self._build_step_sources()
+        self._build_step_search()
+        self._build_step_result()
+        self._build_navbar()
+        self.show_step(0)
+
+    def _build_header(self):
+        top = ttk.Frame(self, padding=(12, 10, 12, 0))
         top.pack(fill="x")
         ttk.Label(top, text="BİLGİ ARAŞTIRMA", font=("Segoe UI", 17, "bold")).pack(side="left")
         ttk.Label(top, text=f"sürüm {APP_VERSION}", foreground="#777").pack(side="left", padx=(8, 0))
         ttk.Label(top, text="PDF • Word • TXT • Resim • SQLite • Yerel OCR",
                   foreground="#555").pack(side="left", padx=16)
-        ttk.Button(top, text="＋ Kaynak ekle", command=self.add_sources).pack(side="right", padx=3)
         ttk.Button(top, text="Yedek oluştur", command=self.backup).pack(side="right", padx=3)
         ttk.Button(top, text="Ayarlar", command=self.open_settings).pack(side="right", padx=3)
 
-        main = ttk.Panedwindow(search_tab, orient="horizontal")
-        main.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        left = ttk.Frame(main, padding=6)
-        right = ttk.Frame(main, padding=6)
-        main.add(left, weight=1)
-        main.add(right, weight=3)
+    def _build_stepper(self):
+        """Adım göstergesi: hangi ekranda olduğunuzu gösterir, tıklayınca geçer."""
+        bar = ttk.Frame(self, padding=(12, 8, 12, 0))
+        bar.pack(fill="x")
+        self.step_buttons = []
+        for i, label in enumerate(("1 · Kaynak ekle ve seç", "2 · Ara", "3 · Sonuç ve rapor")):
+            b = ttk.Button(bar, text=label, width=25,
+                           command=lambda i=i: self.show_step(i))
+            b.pack(side="left", padx=(0, 6))
+            self.step_buttons.append(b)
+        self.step_hint_var = tk.StringVar()
+        ttk.Label(bar, textvariable=self.step_hint_var, foreground="#555").pack(side="right")
 
-        ttk.Label(left, text="KAYNAK KÜTÜPHANESİ", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.doc_tree = ttk.Treeview(left, columns=("use", "type", "chunks"), show="tree headings", height=15)
+    def _build_navbar(self):
+        bar = ttk.Frame(self, padding=(12, 6, 12, 10))
+        bar.pack(fill="x", side="bottom")
+        self.back_btn = ttk.Button(bar, text="‹ Geri", width=12, command=self.prev_step)
+        self.back_btn.pack(side="left")
+        self.next_btn = ttk.Button(bar, text="İleri ›", width=12, command=self.next_step)
+        self.next_btn.pack(side="right")
+
+    def show_step(self, index):
+        """Verilen adımı gösterir; diğerlerini gizler."""
+        index = max(0, min(index, len(self.step_frames) - 1))
+        self.current_step = index
+        for i, frame in enumerate(self.step_frames):
+            if i == index:
+                frame.pack(fill="both", expand=True, padx=12, pady=(8, 0))
+            else:
+                frame.pack_forget()
+        for i, button in enumerate(self.step_buttons):
+            button.state(["disabled"] if i == index else ["!disabled"])
+        self.step_hint_var.set(f"Adım {index + 1} / {len(self.step_frames)}")
+        self.back_btn.state(["disabled"] if index == 0 else ["!disabled"])
+        self.next_btn.state(["disabled"] if index == len(self.step_frames) - 1 else ["!disabled"])
+        self.refresh_step_hints()
+
+    def next_step(self):
+        self.show_step(self.current_step + 1)
+
+    def prev_step(self):
+        self.show_step(self.current_step - 1)
+
+    def open_reports(self):
+        """Raporlar listesinin bulunduğu son adımı açar."""
+        self.show_step(2)
+        self.result_notebook.select(self.reports_tab)
+
+    def refresh_step_hints(self):
+        """Adım düğmelerinde kısa durum bilgisi (kaynak ve sonuç sayısı) gösterir."""
+        docs = len(database.list_documents())
+        self.step_buttons[0].configure(text=f"1 · Kaynak ekle ve seç ({docs})")
+        self.step_buttons[2].configure(text=f"3 · Sonuç ve rapor ({len(self.last_results)})")
+
+    def _build_step_sources(self):
+        frame = ttk.Frame(self)
+        self.step_frames.append(frame)
+        ttk.Label(frame, text="1. ADIM — KAYNAK EKLE VE SEÇ",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Kaynak dosyalarınızı ekleyin; aramaya dâhil etmek istediklerinizi "
+                              "listeden işaretleyin.",
+                  foreground="#555").pack(anchor="w", pady=(2, 10))
+        add = ttk.Frame(frame)
+        add.pack(fill="x")
+        ttk.Button(add, text="＋ Kaynak ekle", command=self.add_sources).pack(side="left")
+        ttk.Button(add, text="Girdi kaynağından al…", command=self.open_input_dialog).pack(side="left", padx=6)
+        ttk.Button(add, text="Tümü", width=8,
+                   command=lambda: self.set_all_documents(True)).pack(side="right")
+        ttk.Button(add, text="Hiçbiri", width=10,
+                   command=lambda: self.set_all_documents(False)).pack(side="right", padx=4)
+        ttk.Label(frame, text="'Aramada' sütununa tıklayarak kaynağı aramaya dâhil edin ya da çıkarın. "
+                              "Seçim kalıcıdır.",
+                  foreground="#555").pack(anchor="w", pady=(6, 0))
+        self.doc_tree = ttk.Treeview(frame, columns=("use", "type", "chunks"),
+                                     show="tree headings", height=16)
         self.doc_tree.heading("#0", text="Belge")
         self.doc_tree.heading("use", text="Aramada")
         self.doc_tree.heading("type", text="Tür")
         self.doc_tree.heading("chunks", text="Bölüm")
-        self.doc_tree.column("#0", width=185)
-        self.doc_tree.column("use", width=62, anchor="center")
-        self.doc_tree.column("type", width=52)
-        self.doc_tree.column("chunks", width=52)
-        self.doc_tree.pack(fill="x", pady=5)
+        self.doc_tree.column("#0", width=360)
+        self.doc_tree.column("use", width=80, anchor="center")
+        self.doc_tree.column("type", width=70)
+        self.doc_tree.column("chunks", width=70)
+        self.doc_tree.pack(fill="both", expand=True, pady=8)
         self.doc_tree.bind("<Button-1>", self.on_doc_click)
-        doc_btns = ttk.Frame(left)
-        doc_btns.pack(fill="x")
-        ttk.Button(doc_btns, text="Seçili kaynağı sil", command=self.delete_selected).pack(side="left")
-        ttk.Button(doc_btns, text="Tümü", width=7, command=lambda: self.set_all_documents(True)).pack(side="right")
-        ttk.Button(doc_btns, text="Hiçbiri", width=9, command=lambda: self.set_all_documents(False)).pack(side="right", padx=3)
-        ttk.Label(left, text="'Aramada' sütununa tıklayarak kaynağı aramaya dâhil edin "
-                             "ya da çıkarın.", foreground="#555", wraplength=230,
-                  justify="left").pack(anchor="w", pady=(4, 0))
-        ttk.Label(left, text="SON ARAMALAR", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(14, 2))
-        self.history = tk.Listbox(left, height=12)
-        self.history.pack(fill="both", expand=True)
-        self.history.bind("<<ListboxSelect>>", self.open_history)
+        bottom = ttk.Frame(frame)
+        bottom.pack(fill="x")
+        ttk.Button(bottom, text="Seçili kaynağı sil", command=self.delete_selected).pack(side="left")
+        self.scope_summary_var = tk.StringVar(value="")
+        ttk.Label(bottom, textvariable=self.scope_summary_var,
+                  foreground="#555").pack(side="right")
 
-        ttk.Label(right, text="SORU / ANAHTAR KELİMELER", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        qbox = ttk.Frame(right)
+    def _build_step_search(self):
+        frame = ttk.Frame(self)
+        self.step_frames.append(frame)
+        ttk.Label(frame, text="2. ADIM — ARA", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Soruyu ya da anahtar kelimeleri yazıp arayın.",
+                  foreground="#555").pack(anchor="w", pady=(2, 8))
+        nb = ttk.Notebook(frame)
+        self.search_notebook = nb
+        nb.pack(fill="both", expand=True)
+        qtab = ttk.Frame(nb, padding=8)
+        nb.add(qtab, text="  Sorgu ve sonuçlar  ")
+        htab = ttk.Frame(nb, padding=8)
+        nb.add(htab, text="  Son aramalar  ")
+
+        ttk.Label(qtab, text="SORU / ANAHTAR KELİMELER", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        qbox = ttk.Frame(qtab)
         qbox.pack(fill="x", pady=5)
-        self.query_entry = tk.Text(qbox, height=3, wrap="word", font=("Segoe UI", 11))
+        self.query_entry = tk.Text(qbox, height=4, wrap="word", font=("Segoe UI", 11))
         self.query_entry.pack(side="left", fill="x", expand=True)
         self.query_entry.bind("<Control-Return>", lambda _e: (self.run_search(), "break")[1])
         qbtns = ttk.Frame(qbox)
         qbtns.pack(side="left", padx=(6, 0), fill="y")
         ttk.Button(qbtns, text="Ara", command=self.run_search).pack(fill="x")
+        ttk.Button(qbtns, text="Akıllı ara (Ollama)", command=self.ai_smart_search).pack(fill="x", pady=(4, 0))
         ttk.Button(qbtns, text="Girdi kaynağı…", command=self.open_input_dialog).pack(fill="x", pady=(4, 0))
-        ttk.Button(qbtns, text="Temizle", command=lambda: self.query_entry.delete("1.0", "end")).pack(fill="x", pady=(4, 0))
-        ttk.Label(right, text="Çok satırlı giriş: Ctrl+Enter ile arar. Girdiyi elle yazabilir, bir dökümandan "
-                              "paragraf seçebilir, resim/ekran görüntüsünden OCR ile ya da web adresinden alabilirsiniz.",
-                  foreground="#555", wraplength=900, justify="left").pack(anchor="w")
-        mode_row = ttk.Frame(right)
-        mode_row.pack(fill="x", pady=(0, 4))
+        ttk.Button(qbtns, text="Temizle",
+                   command=lambda: self.query_entry.delete("1.0", "end")).pack(fill="x", pady=(4, 0))
+        ttk.Label(qtab, text="Çok satırlı giriş: Ctrl+Enter ile arar. Girdiyi elle yazabilir, bir dökümandan "
+                             "paragraf seçebilir, resim/ekran görüntüsünden OCR ile ya da web adresinden alabilirsiniz.",
+                  foreground="#555", wraplength=980, justify="left").pack(anchor="w")
+        mode_row = ttk.Frame(qtab)
+        mode_row.pack(fill="x", pady=(4, 4))
         ttk.Label(mode_row, text="Araştırma türü:").pack(side="left", padx=(0, 4))
         self.mode_var = tk.StringVar(value="Otomatik")
         self.mode_combo = ttk.Combobox(mode_row, textvariable=self.mode_var, state="readonly", width=19,
                                        values=("Otomatik", "Çıkmış soru", "Paragraf / metin", "Kavram"))
         self.mode_combo.pack(side="left", padx=(0, 6))
-        ttk.Label(mode_row, text="Soru/seçenek, paragraf veya tek kavram girebilirsiniz.", foreground="#555").pack(side="left", padx=8)
+        ttk.Label(mode_row, text="Soru/seçenek, paragraf veya tek kavram girebilirsiniz.",
+                  foreground="#555").pack(side="left", padx=8)
         self.match_var = tk.StringVar(value=label_from_settings(
             bool(self.settings.get("all_terms", False)),
             self.settings.get("min_coverage", 0.0)))
@@ -148,10 +230,10 @@ class App(tk.Tk):
         ttk.Checkbutton(mode_row, text="Hızlı akıllı arama (gömme)", variable=self.fast_smart_var,
                         command=self.on_fast_toggle).pack(side="left", padx=8)
         self.status_var = tk.StringVar(value="Hazır — önce kaynak dosyalarınızı ekleyin.")
-        ttk.Label(right, textvariable=self.status_var).pack(anchor="w", pady=(2, 5))
+        ttk.Label(qtab, textvariable=self.status_var).pack(anchor="w", pady=(2, 5))
 
         cols = ("source", "location", "score", "preview")
-        self.result_tree = ttk.Treeview(right, columns=cols, show="headings", height=15)
+        self.result_tree = ttk.Treeview(qtab, columns=cols, show="headings", height=14)
         for col, title in [("source","Kaynak"),("location","Sayfa / Konum"),("score","Puan"),("preview","Kaynak metni")]:
             self.result_tree.heading(col, text=title)
         self.result_tree.column("source", width=185)
@@ -160,11 +242,41 @@ class App(tk.Tk):
         self.result_tree.column("preview", width=520)
         self.result_tree.pack(fill="both", expand=True, pady=5)
         self.result_tree.bind("<<TreeviewSelect>>", self.show_selected_result)
+        ttk.Label(qtab, text="Bir sonuca çift tıklayarak 3. adımda ayrıntısını ve rapor seçeneklerini açabilirsiniz.",
+                  foreground="#555").pack(anchor="w")
+        self.result_tree.bind("<Double-1>", lambda _e: self.open_result_detail())
 
-        action = ttk.Frame(right)
-        action.pack(fill="x", pady=4)
+        ttk.Label(htab, text="SON ARAMALAR", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(htab, text="Bir aramayı seçtiğinizde sorgu yüklenir ve yeniden çalıştırılır.",
+                  foreground="#555").pack(anchor="w", pady=(2, 6))
+        self.history = tk.Listbox(htab, height=18)
+        self.history.pack(fill="both", expand=True)
+        self.history.bind("<<ListboxSelect>>", self.open_history)
+
+    def open_result_detail(self):
+        """Seçili sonucun ayrıntısını 3. adımda gösterir."""
+        if not self.result_tree.selection():
+            return
+        self.show_selected_result()
+        self.show_step(2)
+
+    def _build_step_result(self):
+        frame = ttk.Frame(self)
+        self.step_frames.append(frame)
+        ttk.Label(frame, text="3. ADIM — SONUÇ VE RAPOR",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Seçili kaynağı inceleyin, konu notu oluşturun ve rapor üretin.",
+                  foreground="#555").pack(anchor="w", pady=(2, 8))
+        nb = ttk.Notebook(frame)
+        self.result_notebook = nb
+        nb.pack(fill="both", expand=True)
+        dtab = ttk.Frame(nb, padding=8)
+        nb.add(dtab, text="  Kaynak metni ve not  ")
+        self._build_reports_tab(nb)
+
+        action = ttk.Frame(dtab)
+        action.pack(fill="x", pady=(0, 6))
         ttk.Button(action, text="Kaynaklardan konu notu oluştur (Ollama)", command=self.ai_explain).pack(side="left")
-        ttk.Button(action, text="Akıllı ara (Ollama)", command=self.ai_smart_search).pack(side="left", padx=5)
         ttk.Button(action, text="Konu notunu arşivle", command=self.save_research_note).pack(side="left", padx=5)
         ttk.Button(action, text="PDF raporu", command=lambda: self.export_report("pdf")).pack(side="left", padx=3)
         ttk.Button(action, text="Word raporu", command=lambda: self.export_report("docx")).pack(side="left", padx=3)
@@ -172,17 +284,16 @@ class App(tk.Tk):
         ttk.Button(action, text="CSV", command=self.export_results).pack(side="left", padx=3)
         ttk.Button(action, text="Kaynak dosyayı aç", command=self.open_source).pack(side="left", padx=3)
 
-        ttk.Label(right, text="SEÇİLİ SONUÇ / KAYNAK METNİ", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 2))
-        self.detail = tk.Text(right, height=12, wrap="word", font=("Segoe UI", 10))
+        ttk.Label(dtab, text="SEÇİLİ SONUÇ / KAYNAK METNİ", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 2))
+        self.detail = tk.Text(dtab, height=16, wrap="word", font=("Segoe UI", 10))
         self.detail.pack(fill="both", expand=True)
         self.current_ai_answer = ""
-        note_row = ttk.Frame(right)
+        note_row = ttk.Frame(dtab)
         note_row.pack(fill="x", pady=4)
         ttk.Label(note_row, text="Not:").pack(side="left")
         self.note_entry = ttk.Entry(note_row)
         self.note_entry.pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(note_row, text="Notu kaydet", command=self.save_note).pack(side="right")
-        self._build_reports_tab(self.notebook)
 
     def _build_menu(self):
         menubar = tk.Menu(self)
@@ -212,8 +323,8 @@ class App(tk.Tk):
         menubar.add_cascade(label="Kaynaklar", menu=kaynak)
 
         rapor = tk.Menu(menubar, tearoff=0)
-        rapor.add_command(label="Raporlar sekmesini aç", accelerator="Ctrl+R",
-                          command=lambda: self.notebook.select(self.reports_tab))
+        rapor.add_command(label="Raporlar listesini aç", accelerator="Ctrl+R",
+                          command=self.open_reports)
         rapor.add_separator()
         rapor.add_command(label="PDF raporu", command=lambda: self.export_report("pdf"))
         rapor.add_command(label="Word raporu", command=lambda: self.export_report("docx"))
@@ -225,8 +336,12 @@ class App(tk.Tk):
         menubar.add_cascade(label="Rapor", menu=rapor)
 
         gorunum = tk.Menu(menubar, tearoff=0)
-        gorunum.add_command(label="Arama sekmesi", command=lambda: self.notebook.select(0))
-        gorunum.add_command(label="Raporlar sekmesi", command=lambda: self.notebook.select(self.reports_tab))
+        gorunum.add_command(label="1 · Kaynak ekle ve seç", accelerator="Ctrl+1",
+                            command=lambda: self.show_step(0))
+        gorunum.add_command(label="2 · Ara", accelerator="Ctrl+2",
+                            command=lambda: self.show_step(1))
+        gorunum.add_command(label="3 · Sonuç ve rapor", accelerator="Ctrl+3",
+                            command=lambda: self.show_step(2))
         gorunum.add_separator()
         gorunum.add_command(label="Ayarlar…", command=self.open_settings)
         menubar.add_cascade(label="Görünüm", menu=gorunum)
@@ -240,7 +355,10 @@ class App(tk.Tk):
         self.bind("<Control-o>", lambda _e: self.add_sources())
         self.bind("<Control-g>", lambda _e: self.open_input_dialog())
         self.bind("<Control-q>", lambda _e: self.on_close())
-        self.bind("<Control-r>", lambda _e: self.notebook.select(self.reports_tab))
+        self.bind("<Control-r>", lambda _e: self.open_reports())
+        self.bind("<Control-Key-1>", lambda _e: self.show_step(0))
+        self.bind("<Control-Key-2>", lambda _e: self.show_step(1))
+        self.bind("<Control-Key-3>", lambda _e: self.show_step(2))
         self.bind("<Control-Return>", lambda _e: self.run_search())
         self.bind("<Control-Shift-Return>", lambda _e: self.ai_smart_search())
 
@@ -396,6 +514,8 @@ class App(tk.Tk):
             mark = "✓" if active is None or d["id"] in active else ""
             self.doc_tree.insert("", "end", iid=str(d["id"]), text=d["name"],
                                  values=(mark, d["file_type"], d["chunk_count"]))
+        self.scope_summary_var.set(f"Aramaya dâhil: {self.active_scope_text()}")
+        self.refresh_step_hints()
 
     def on_doc_click(self, event):
         """'Aramada' sütununa tıklanınca kaynağı aramaya dâhil eder / çıkarır."""
@@ -485,6 +605,9 @@ class App(tk.Tk):
         self.status_var.set(f"{len(results)} ilgili metin bölümü bulundu "
                             f"({self.active_scope_text()}).")
         self.refresh_history()
+        self.refresh_step_hints()
+        if results and self.current_step == 1:
+            self.status_var.set(self.status_var.get() + " Sonuçları görmek için “İleri”ye geçin.")
 
     def show_selected_result(self, _event=None):
         sel = self.result_tree.selection()

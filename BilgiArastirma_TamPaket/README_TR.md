@@ -1,11 +1,13 @@
 # BİLGİ ARAŞTIRMA — Tam Windows Paketi
 
-Sürüm 2.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
+Sürüm 3.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
 
 ## Özellikler
+- **Adım adım akış:** Arayüz üç adıma bölünmüştür; üstte adım göstergesi,
+  altta `Geri` / `İleri` düğmeleri. Aynı anda tek adım görünür.
+  1. Kaynak ekle ve seç, 2. Ara, 3. Sonuç ve rapor.
 - **Menü çubuğu:** Dosya, Ara, Kaynaklar, Rapor, Görünüm ve Yardım menüleriyle
   tüm işlemler tek yerde; klavye kısayolları eşlenmiştir.
-- **Sekmeli arayüz:** `Arama` ve `Raporlar` sekmeleri.
 - **Oluşturulan raporlar:** `Raporlar` sekmesinde üretilen tüm raporlar (PDF,
   Word, TXT, CSV, konu notu, yedek) tür, boyut ve tarih bilgisiyle listelenir;
   tek tıkla açılır, silinebilir, klasör açılabilir.
@@ -83,8 +85,22 @@ Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boy
 
 Bu klasörü yedeklemek için uygulamadaki `Yedek oluştur` düğmesini kullanın. Veritabanı ile belge arşivi birlikte ZIP'e alınır.
 
-## Menüler ve sekmeler
-Uygulamanın üstünde bir menü çubuğu, altında iki sekme bulunur.
+## Adım adım kullanım
+Uygulama üç adımdan oluşur. Üstteki adım göstergesinden doğrudan geçebilir,
+alttaki `Geri` / `İleri` düğmelerini kullanabilir ya da `Ctrl+1/2/3`
+kısayollarına basabilirsiniz.
+
+| Adım | İçerik |
+|---|---|
+| 1 · Kaynak ekle ve seç | Kaynak ekleme düğmeleri, tam genişlikte kaynak listesi (`Aramada` sütunu), `Tümü`/`Hiçbiri`, seçim özeti |
+| 2 · Ara | **Sorgu ve sonuçlar** sekmesi (sorgu, arama, ayarlar, sonuç tablosu) ve **Son aramalar** sekmesi |
+| 3 · Sonuç ve rapor | **Kaynak metni ve not** sekmesi (konu notu, rapor üretme) ve **Raporlar** sekmesi |
+
+Adım düğmelerinde sayı görünür: kaç kaynak eklendiği ve kaç sonuç bulunduğu.
+2. adımda bir sonuca çift tıklarsanız 3. adım açılır ve kaynak metni gösterilir.
+
+## Menüler
+Uygulamanın üstünde bir menü çubuğu bulunur.
 
 | Menü | İşlemler |
 |---|---|
@@ -92,14 +108,14 @@ Uygulamanın üstünde bir menü çubuğu, altında iki sekme bulunur.
 | Ara | Ara, akıllı ara, sorguyu temizle, son aramalar |
 | Kaynaklar | Tüm kaynakları aramaya dâhil et, hiçbirini kullanma, kaynak sil, kaynak dosyayı aç |
 | Rapor | Raporlar sekmesini aç, PDF/Word/TXT/CSV raporu üret, konu notunu arşivle |
-| Görünüm | Sekmeler arasında geçiş, ayarlar |
+| Görünüm | Adımlar arasında geçiş (1/2/3), ayarlar |
 | Yardım | Hakkında (sürüm bilgisi) |
 
 Kısayollar: `Ctrl+O` kaynak ekle, `Ctrl+G` girdi kaynağı, `Ctrl+Enter` ara,
-`Ctrl+Shift+Enter` akıllı ara, `Ctrl+R` raporlar, `Ctrl+Q` çıkış.
+`Ctrl+Shift+Enter` akıllı ara, `Ctrl+1/2/3` adımlar, `Ctrl+R` raporlar, `Ctrl+Q` çıkış.
 
 ## Kaynak seçimi (birden fazla kaynakta arama)
-Sol taraftaki kaynak listesinde `Aramada` sütunu bulunur. Bir kaynağın önündeki
+1. adımdaki kaynak listesinde `Aramada` sütunu bulunur. Bir kaynağın önündeki
 `✓` işaretine tıklayarak onu aramaya dâhil edebilir ya da çıkarabilirsiniz.
 `Tümü` ve `Hiçbiri` düğmeleri toplu seçim yapar. Yalnızca işaretli kaynaklarda
 arama yapılır; seçim ayarlara kaydedilir. Hiçbir kaynak seçili değilken arama
@@ -107,7 +123,7 @@ başlatılırsa uyarı verilir. Akıllı arama da aynı seçime uyar.
 
 ## Oluşturulan raporlar
 Rapor ürettiğinizde (PDF, Word, TXT, CSV, konu notu, yedek) dosya `exports/`
-klasörüne yazılır ve `Raporlar` sekmesindeki liste otomatik güncellenir.
+klasörüne yazılır ve 3. adımdaki `Raporlar` sekmesindeki liste otomatik güncellenir.
 
 | Düğme | Ne yapar |
 |---|---|

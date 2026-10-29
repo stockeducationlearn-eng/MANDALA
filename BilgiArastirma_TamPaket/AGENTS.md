@@ -92,9 +92,15 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
   boş liste = hiçbiri (kullanıcı uyarılır), liste = yalnızca o belgeler. Seçili
   belgelerin tümü silinirse `resolve_scope` `None` döndürür, böylece arama çıkmaz
   sokakta kalmaz. Bu mantığı app.py'ye gömmeden `scope.py` içinde tutun.
-- **Arayüz kablolaması:** Menü, sekme ve tablo sütunlarını değiştirdiğinizde
+- **Arayüz kablolaması:** Menü, adım ve tablo sütunlarını değiştirdiğinizde
   `tests/test_app_ui.py` içindeki sahte Tk katmanını da güncelleyin; bu testler
   penceresiz ortamda kurulumu doğrular.
+- **Adım akışı:** `_build_ui` üç adım çerçevesini (`_build_step_sources`,
+  `_build_step_search`, `_build_step_result`) `self.step_frames` listesine ekler;
+  `show_step(n)` yalnızca birini `pack` eder. Yeni bir ekran eklerken aynı kalıbı
+  izleyin ve adım düğmesi metnini `refresh_step_hints` içinde güncelleyin.
+  Widget'ları adım dışına taşımayın; `self.doc_tree`, `self.result_tree` gibi
+  alanlar kurulum sırasında oluşturulmalı, çünkü menü ve kısayollar onlara erişir.
 - **Rapor listesi:** `exporter.list_reports()` dosya sistemini tek kaynak kabul eder,
   ayrıca veritabanı kaydı tutmaz. `EXPORT_DIR` monkeypatch ile değiştirilebilir.
 - **Sürüm:** `app.py` içindeki `APP_VERSION` sabiti pencere başlığında, üst şeritte ve

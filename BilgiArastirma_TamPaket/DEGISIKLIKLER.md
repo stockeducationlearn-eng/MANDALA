@@ -1,5 +1,53 @@
 # Değişiklik Notları
 
+## Sürüm 3.0
+
+Arayüz artık tek ekran değil, adım adım ilerleyen bir akış. Üstte adım
+göstergesi, altta `Geri` / `İleri` düğmeleri var. Aynı anda yalnızca bir adım
+görünür; böylece ekran kalabalığı kalktı.
+
+### Adım 1 — Kaynak ekle ve seç
+
+- `＋ Kaynak ekle` ve `Girdi kaynağından al…` düğmeleri.
+- Kaynak listesi tam genişlikte; `Aramada` sütunundan işaretleme.
+- `Tümü` / `Hiçbiri` toplu seçim.
+- Altta "Aramaya dâhil: 3/7 kaynak seçili" biçiminde özet.
+
+### Adım 2 — Ara
+
+İki sekme içerir:
+
+- **Sorgu ve sonuçlar:** sorgu kutusu, `Ara`, `Akıllı ara (Ollama)`,
+  `Girdi kaynağı…`, `Temizle`; araştırma türü, eşleşme oranı ve Türkçe
+  duyarlılık seçenekleri; sonuç tablosu.
+- **Son aramalar:** geçmiş aramalar listesi.
+
+Bir sonuca çift tıklandığında 3. adım açılır ve kaynak metni gösterilir.
+
+### Adım 3 — Sonuç ve rapor
+
+İki sekme içerir:
+
+- **Kaynak metni ve not:** konu notu oluşturma, arşivleme, PDF/Word/TXT/CSV
+  rapor üretme, kaynak dosyayı açma; seçili kaynak metni ve not alanı.
+- **Raporlar:** üretilen raporların listesi (tür, boyut, tarih, ad).
+
+### Gezinme
+
+- Adım göstergesindeki düğmelere tıklayarak doğrudan geçebilirsiniz.
+- `Geri` / `İleri` düğmeleri; ilk ve son adımda ilgili düğme pasif olur.
+- Kısayollar: `Ctrl+1`, `Ctrl+2`, `Ctrl+3` adımlara; `Ctrl+R` raporlar
+  listesine.
+- Adım düğmelerinde sayı görünür: kaç kaynak eklendiği ve kaç sonuç bulunduğu.
+- Arama bittiğinde durum satırı sonuçları görmek için `İleri`ye geçmeyi önerir.
+
+### Testler
+
+Test sayısı 127'den **133'e** çıktı (2 test ortama bağlı olarak atlanır).
+Adım sayısı, adım geçişleri (ilk/son sınırları), aynı anda yalnızca bir adımın
+görünmesi, sıra dışı adım numaralarının sınırlanması, sekmelerin doğru adımda
+olması ve adım düğmelerindeki kaynak sayısı penceresiz ortamda sınanır.
+
 ## Sürüm 2.0
 
 Bu sürümde uygulama, tek ekranlı bir araçtan sekmeli ve menülü bir masaüstü

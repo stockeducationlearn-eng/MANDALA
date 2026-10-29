@@ -22,6 +22,9 @@ class _Widget:
         self.selection_value = ()
         self.value = kwargs.get("textvariable")
         self.menu_items = []     # yalnızca menü çubuğu için
+        self.configured = []     # configure() çağrıları
+        self.state_history = []
+        self.packed = False      # pack/pack_forget durumu
 
     # -- ortak no-op'lar -------------------------------------------------
     def __getattr__(self, name):
@@ -32,9 +35,13 @@ class _Widget:
         return _call
 
     def pack(self, *a, **k):
+        self.packed = True
         parent = a[0] if a and isinstance(a[0], _Widget) else None
         if parent is not None:
             parent.children.append(self)
+
+    def pack_forget(self):
+        self.packed = False
 
     def grid(self, *a, **k):
         pass
@@ -43,9 +50,13 @@ class _Widget:
         pass
 
     def configure(self, *a, **k):
-        pass
+        self.configured.append((a, k))
 
     config = configure
+
+    def state(self, spec=None):
+        if spec is not None:
+            self.state_history.append(tuple(spec))
 
     # -- Treeview / Listbox / Text ---------------------------------------
     def insert(self, *a, **k):
@@ -190,11 +201,65 @@ def fake_tk(monkeypatch, tmp_path):
     return types.SimpleNamespace(module=app_module, shown=shown)
 
 
-def test_ui_builds_with_menu_and_two_tabs(fake_tk, temp_db):
+def test_ui_builds_with_three_steps(fake_tk, temp_db):
     app = fake_tk.module.App()
-    assert app.notebook is not None
-    tabs = [text.strip() for _child, text in app.notebook.items]
-    assert tabs == ["Arama", "Raporlar"]
+    assert len(app.step_frames) == 3
+    assert app.current_step == 0
+
+
+def test_first_step_is_source_selection(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    assert hasattr(app, "doc_tree")
+    assert app.doc_tree.kwargs["columns"] == ("use", "type", "chunks")
+
+
+def test_step_navigation_moves_forward_and_back(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    assert app.current_step == 0
+    app.next_step()
+    assert app.current_step == 1
+    app.next_step()
+    assert app.current_step == 2
+    app.next_step()                 # son adımda ileri gitmez
+    assert app.current_step == 2
+    app.prev_step()
+    assert app.current_step == 1
+    app.prev_step()
+    app.prev_step()                 # ilk adımda geri gitmez
+    assert app.current_step == 0
+
+
+def test_search_lives_in_second_step_with_own_tabs(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    tabs = [text.strip() for _child, text in app.search_notebook.items]
+    assert tabs == ["Sorgu ve sonuçlar", "Son aramalar"]
+    assert hasattr(app, "result_tree")
+
+
+def test_result_and_reports_share_third_step(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    tabs = [text.strip() for _child, text in app.result_notebook.items]
+    assert tabs == ["Kaynak metni ve not", "Raporlar"]
+
+
+def test_only_current_step_is_visible(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    visible = [i for i, f in enumerate(app.step_frames) if f.packed]
+    assert visible == [0]
+    app.next_step()
+    visible = [i for i, f in enumerate(app.step_frames) if f.packed]
+    assert visible == [1]
+    app.show_step(2)
+    visible = [i for i, f in enumerate(app.step_frames) if f.packed]
+    assert visible == [2]
+
+
+def test_out_of_range_step_is_clamped(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    app.show_step(99)
+    assert app.current_step == 2
+    app.show_step(-5)
+    assert app.current_step == 0
 
 
 def test_menubar_has_expected_menus(fake_tk, temp_db):
@@ -203,14 +268,20 @@ def test_menubar_has_expected_menus(fake_tk, temp_db):
     assert labels == ["Dosya", "Ara", "Kaynaklar", "Rapor", "Görünüm", "Yardım"]
 
 
-def test_document_table_has_scope_column(fake_tk, temp_db):
-    app = fake_tk.module.App()
-    assert app.doc_tree.kwargs["columns"] == ("use", "type", "chunks")
-
-
 def test_report_table_columns(fake_tk, temp_db):
     app = fake_tk.module.App()
     assert app.report_tree.kwargs["columns"] == ("kind", "size", "modified", "name")
+
+
+def test_step_buttons_show_source_count(fake_tk, temp_db):
+    app = fake_tk.module.App()
+    with temp_db.db() as con:
+        con.execute("INSERT INTO documents(name, stored_path, file_type, sha256, added_at) "
+                    "VALUES ('a.txt', '/tmp/a.txt', '.txt', 'a', datetime('now','localtime'))")
+        con.commit()
+    app.refresh_step_hints()
+    label = app.step_buttons[0].configured[-1][1]["text"]
+    assert label == "1 · Kaynak ekle ve seç (1)"
 
 
 def test_refresh_documents_marks_all_selected_by_default(fake_tk, temp_db):
