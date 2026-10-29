@@ -10,6 +10,48 @@ EXPORT_DIR.mkdir(exist_ok=True)
 def _safe_name(text):
     return "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in (text or "arama")).strip()[:60] or "arama"
 
+# exports klasöründeki dosya uzantıları ve okunabilir tür adları.
+REPORT_KINDS = {
+    ".pdf": "PDF raporu", ".docx": "Word raporu", ".txt": "Metin / konu notu",
+    ".csv": "CSV tablo", ".zip": "Yedek",
+}
+
+
+def report_kind(path):
+    """Rapor dosyasının tür etiketini döndürür."""
+    return REPORT_KINDS.get(Path(path).suffix.lower(), "Dosya")
+
+
+def list_reports():
+    """exports klasöründeki raporları en yeni önce listeler.
+
+    Kullanıcı oluşturduğu raporları uygulama içinden bulabilsin diye
+    dosya sistemi tek kaynak kabul edilir; ayrıca bir kayıt tutulmaz.
+    """
+    if not EXPORT_DIR.exists():
+        return []
+    reports = []
+    for p in EXPORT_DIR.rglob("*"):
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        stat = p.stat()
+        reports.append({
+            "path": p, "name": p.name, "kind": report_kind(p),
+            "size": stat.st_size, "modified": datetime.fromtimestamp(stat.st_mtime),
+        })
+    reports.sort(key=lambda r: r["modified"], reverse=True)
+    return reports
+
+
+def human_size(size):
+    """Dosya boyutunu okunabilir biçime çevirir (ör. 1,2 MB)."""
+    size = float(size or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            value = f"{size:.0f}" if unit == "B" else f"{size:.1f}"
+            return value.replace(".", ",") + " " + unit
+        size /= 1024
+
 def _report_text(results, query="", mode="", ai_answer=""):
     lines = ["BİLGİ ARAŞTIRMA — ARAMA RAPORU", "=" * 60,
              f"Arama / girdi: {query}", f"Araştırma türü: {mode}",

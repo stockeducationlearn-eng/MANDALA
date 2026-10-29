@@ -72,3 +72,47 @@ def test_backup_includes_db_and_documents(tmp_path, monkeypatch):
         names = set(z.namelist())
     assert "data/pdf_arastirma.db" in names
     assert "documents/ornek.txt" in names
+
+
+# --- Oluşturulan raporları listeleme (Raporlar sekmesi) -------------------
+
+def test_list_reports_empty_folder(export_dir):
+    assert exporter.list_reports() == []
+
+
+def test_list_reports_newest_first_with_kind_and_size(export_dir):
+    exporter.export_results(RESULTS, fmt="txt", query="tazminat")
+    exporter.export_csv(RESULTS)
+    reports = exporter.list_reports()
+    assert len(reports) == 2
+    assert reports[0]["modified"] >= reports[1]["modified"]      # en yeni önce
+    kinds = {r["kind"] for r in reports}
+    assert kinds == {"Metin / konu notu", "CSV tablo"}
+    assert all(r["size"] > 0 and r["path"].exists() for r in reports)
+
+
+def test_report_kind_labels(export_dir):
+    assert exporter.report_kind("a.pdf") == "PDF raporu"
+    assert exporter.report_kind("a.docx") == "Word raporu"
+    assert exporter.report_kind("a.zip") == "Yedek"
+    assert exporter.report_kind("a.xyz") == "Dosya"
+
+
+def test_list_reports_finds_nested_files(export_dir):
+    """Alt klasördeki raporlar da listede görünmeli."""
+    sub = export_dir / "eski"
+    sub.mkdir()
+    (sub / "rapor.txt").write_text("içerik", encoding="utf-8")
+    reports = exporter.list_reports()
+    assert [r["name"] for r in reports] == ["rapor.txt"]
+
+
+def test_list_reports_skips_hidden_files(export_dir):
+    (export_dir / ".gizli").write_text("x", encoding="utf-8")
+    assert exporter.list_reports() == []
+
+
+def test_human_size_formats_turkish_decimal(export_dir):
+    assert exporter.human_size(512) == "512 B"
+    assert exporter.human_size(2048) == "2,0 KB"
+    assert exporter.human_size(5 * 1024 * 1024) == "5,0 MB"

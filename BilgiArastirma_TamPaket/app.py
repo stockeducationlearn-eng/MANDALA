@@ -10,7 +10,9 @@ from search_engine import (search, MATCH_CHOICES, match_from_label,
                            label_from_settings)
 from ai_helper import (explain_with_ollama, expand_query, rank_by_relevance,
                        check_ollama, OllamaError, rank_by_embedding, filter_by_score)
-from exporter import export_csv, export_results, backup_project
+from exporter import (export_csv, export_results, backup_project,
+                      list_reports, human_size)
+from scope import resolve_scope, toggle_selection, scope_text
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -18,20 +20,24 @@ SETTINGS = DATA / "settings.json"
 LOG_DIR = ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+APP_VERSION = "2.0"
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         database.init_db()
-        self.title("Bilgi Araştırma — Kaynaklı Yerel Arama")
+        self.title(f"Bilgi Araştırma {APP_VERSION} — Kaynaklı Yerel Arama")
         self.geometry("1380x900")
         self.minsize(1000, 700)
         self.last_results = []
         self.last_search_id = None
         self.selected_result_index = None
         self.settings = self.load_settings()
+        self.report_list = []
         self._build_ui()
         self.refresh_documents()
         self.refresh_history()
+        self.refresh_reports()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def load_settings(self):
@@ -58,16 +64,22 @@ class App(tk.Tk):
         style = ttk.Style(self)
         try: style.theme_use("clam")
         except Exception: pass
-        top = ttk.Frame(self, padding=10)
+        self._build_menu()
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True)
+        search_tab = ttk.Frame(self.notebook)
+        self.notebook.add(search_tab, text="  Arama  ")
+        top = ttk.Frame(search_tab, padding=10)
         top.pack(fill="x")
         ttk.Label(top, text="BİLGİ ARAŞTIRMA", font=("Segoe UI", 17, "bold")).pack(side="left")
+        ttk.Label(top, text=f"sürüm {APP_VERSION}", foreground="#777").pack(side="left", padx=(8, 0))
         ttk.Label(top, text="PDF • Word • TXT • Resim • SQLite • Yerel OCR",
                   foreground="#555").pack(side="left", padx=16)
         ttk.Button(top, text="＋ Kaynak ekle", command=self.add_sources).pack(side="right", padx=3)
         ttk.Button(top, text="Yedek oluştur", command=self.backup).pack(side="right", padx=3)
         ttk.Button(top, text="Ayarlar", command=self.open_settings).pack(side="right", padx=3)
 
-        main = ttk.Panedwindow(self, orient="horizontal")
+        main = ttk.Panedwindow(search_tab, orient="horizontal")
         main.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         left = ttk.Frame(main, padding=6)
         right = ttk.Frame(main, padding=6)
@@ -75,15 +87,25 @@ class App(tk.Tk):
         main.add(right, weight=3)
 
         ttk.Label(left, text="KAYNAK KÜTÜPHANESİ", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.doc_tree = ttk.Treeview(left, columns=("type", "chunks"), show="tree headings", height=15)
+        self.doc_tree = ttk.Treeview(left, columns=("use", "type", "chunks"), show="tree headings", height=15)
         self.doc_tree.heading("#0", text="Belge")
+        self.doc_tree.heading("use", text="Aramada")
         self.doc_tree.heading("type", text="Tür")
         self.doc_tree.heading("chunks", text="Bölüm")
-        self.doc_tree.column("#0", width=205)
-        self.doc_tree.column("type", width=58)
-        self.doc_tree.column("chunks", width=58)
+        self.doc_tree.column("#0", width=185)
+        self.doc_tree.column("use", width=62, anchor="center")
+        self.doc_tree.column("type", width=52)
+        self.doc_tree.column("chunks", width=52)
         self.doc_tree.pack(fill="x", pady=5)
-        ttk.Button(left, text="Seçili kaynağı sil", command=self.delete_selected).pack(anchor="w")
+        self.doc_tree.bind("<Button-1>", self.on_doc_click)
+        doc_btns = ttk.Frame(left)
+        doc_btns.pack(fill="x")
+        ttk.Button(doc_btns, text="Seçili kaynağı sil", command=self.delete_selected).pack(side="left")
+        ttk.Button(doc_btns, text="Tümü", width=7, command=lambda: self.set_all_documents(True)).pack(side="right")
+        ttk.Button(doc_btns, text="Hiçbiri", width=9, command=lambda: self.set_all_documents(False)).pack(side="right", padx=3)
+        ttk.Label(left, text="'Aramada' sütununa tıklayarak kaynağı aramaya dâhil edin "
+                             "ya da çıkarın.", foreground="#555", wraplength=230,
+                  justify="left").pack(anchor="w", pady=(4, 0))
         ttk.Label(left, text="SON ARAMALAR", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(14, 2))
         self.history = tk.Listbox(left, height=12)
         self.history.pack(fill="both", expand=True)
@@ -160,6 +182,163 @@ class App(tk.Tk):
         self.note_entry = ttk.Entry(note_row)
         self.note_entry.pack(side="left", fill="x", expand=True, padx=5)
         ttk.Button(note_row, text="Notu kaydet", command=self.save_note).pack(side="right")
+        self._build_reports_tab(self.notebook)
+
+    def _build_menu(self):
+        menubar = tk.Menu(self)
+
+        dosya = tk.Menu(menubar, tearoff=0)
+        dosya.add_command(label="Kaynak ekle…", accelerator="Ctrl+O", command=self.add_sources)
+        dosya.add_command(label="Girdi kaynağından al…", accelerator="Ctrl+G", command=self.open_input_dialog)
+        dosya.add_separator()
+        dosya.add_command(label="Yedek oluştur (ZIP)", command=self.backup)
+        dosya.add_command(label="Çıkış", accelerator="Ctrl+Q", command=self.on_close)
+        menubar.add_cascade(label="Dosya", menu=dosya)
+
+        ara = tk.Menu(menubar, tearoff=0)
+        ara.add_command(label="Ara", accelerator="Ctrl+Enter", command=self.run_search)
+        ara.add_command(label="Akıllı ara (Ollama)", accelerator="Ctrl+Shift+Enter", command=self.ai_smart_search)
+        ara.add_separator()
+        ara.add_command(label="Sorguyu temizle", command=lambda: self.query_entry.delete("1.0", "end"))
+        ara.add_command(label="Son aramalar", command=self.refresh_history)
+        menubar.add_cascade(label="Ara", menu=ara)
+
+        kaynak = tk.Menu(menubar, tearoff=0)
+        kaynak.add_command(label="Tüm kaynakları aramaya dâhil et", command=lambda: self.set_all_documents(True))
+        kaynak.add_command(label="Hiçbir kaynağı kullanma", command=lambda: self.set_all_documents(False))
+        kaynak.add_separator()
+        kaynak.add_command(label="Seçili kaynağı sil", command=self.delete_selected)
+        kaynak.add_command(label="Kaynak dosyayı aç", command=self.open_source)
+        menubar.add_cascade(label="Kaynaklar", menu=kaynak)
+
+        rapor = tk.Menu(menubar, tearoff=0)
+        rapor.add_command(label="Raporlar sekmesini aç", accelerator="Ctrl+R",
+                          command=lambda: self.notebook.select(self.reports_tab))
+        rapor.add_separator()
+        rapor.add_command(label="PDF raporu", command=lambda: self.export_report("pdf"))
+        rapor.add_command(label="Word raporu", command=lambda: self.export_report("docx"))
+        rapor.add_command(label="TXT raporu", command=lambda: self.export_report("txt"))
+        rapor.add_command(label="CSV tablo", command=self.export_results)
+        rapor.add_separator()
+        rapor.add_command(label="Konu notunu arşivle", command=self.save_research_note)
+        rapor.add_command(label="Rapor listesini yenile", command=self.refresh_reports)
+        menubar.add_cascade(label="Rapor", menu=rapor)
+
+        gorunum = tk.Menu(menubar, tearoff=0)
+        gorunum.add_command(label="Arama sekmesi", command=lambda: self.notebook.select(0))
+        gorunum.add_command(label="Raporlar sekmesi", command=lambda: self.notebook.select(self.reports_tab))
+        gorunum.add_separator()
+        gorunum.add_command(label="Ayarlar…", command=self.open_settings)
+        menubar.add_cascade(label="Görünüm", menu=gorunum)
+
+        yardim = tk.Menu(menubar, tearoff=0)
+        yardim.add_command(label="Hakkında", command=self.show_about)
+        menubar.add_cascade(label="Yardım", menu=yardim)
+
+        self.config(menu=menubar)
+        self.menubar = menubar      # menü çubuğuna referans tutulmazsa çöp toplanabilir
+        self.bind("<Control-o>", lambda _e: self.add_sources())
+        self.bind("<Control-g>", lambda _e: self.open_input_dialog())
+        self.bind("<Control-q>", lambda _e: self.on_close())
+        self.bind("<Control-r>", lambda _e: self.notebook.select(self.reports_tab))
+        self.bind("<Control-Return>", lambda _e: self.run_search())
+        self.bind("<Control-Shift-Return>", lambda _e: self.ai_smart_search())
+
+    def _build_reports_tab(self, notebook):
+        tab = ttk.Frame(notebook)
+        self.reports_tab = tab
+        notebook.add(tab, text="  Raporlar  ")
+        head = ttk.Frame(tab, padding=(10, 10, 10, 0))
+        head.pack(fill="x")
+        ttk.Label(head, text="OLUŞTURULAN RAPORLAR", font=("Segoe UI", 11, "bold")).pack(side="left")
+        ttk.Button(head, text="Klasörü aç", command=self.open_reports_folder).pack(side="right", padx=3)
+        ttk.Button(head, text="Yenile", command=self.refresh_reports).pack(side="right", padx=3)
+        ttk.Button(head, text="Sil", command=self.delete_report).pack(side="right", padx=3)
+        ttk.Button(head, text="Aç", command=self.open_report).pack(side="right", padx=3)
+        self.report_count_var = tk.StringVar(value="")
+        ttk.Label(tab, textvariable=self.report_count_var, foreground="#555",
+                  padding=(10, 4)).pack(anchor="w")
+        cols = ("kind", "size", "modified", "name")
+        self.report_tree = ttk.Treeview(tab, columns=cols, show="headings", height=14)
+        for col, title, width in [("kind", "Tür", 150), ("size", "Boyut", 90),
+                                  ("modified", "Oluşturulma", 160), ("name", "Dosya adı", 560)]:
+            self.report_tree.heading(col, text=title)
+            self.report_tree.column(col, width=width, anchor="w")
+        self.report_tree.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self.report_tree.bind("<Double-1>", lambda _e: self.open_report())
+        ttk.Label(tab, text="Listeden bir rapora çift tıklayarak açabilirsiniz. Yeni raporlar "
+                            "Arama sekmesindeki 'PDF / Word / TXT raporu' düğmeleriyle üretilir.",
+                  foreground="#555", padding=(10, 0, 10, 10)).pack(anchor="w")
+
+    def refresh_reports(self):
+        """exports klasörünü tarayıp rapor listesini günceller."""
+        self.report_tree.delete(*self.report_tree.get_children())
+        reports = list_reports()
+        for i, r in enumerate(reports):
+            self.report_tree.insert("", "end", iid=str(i),
+                values=(r["kind"], human_size(r["size"]),
+                        r["modified"].strftime("%Y-%m-%d %H:%M"), r["name"]))
+        self.report_list = reports
+        if reports:
+            self.report_count_var.set(f"{len(reports)} rapor bulundu — en yeni: {reports[0]['name']}")
+        else:
+            self.report_count_var.set("Henüz rapor oluşturulmadı. Arama sekmesinden rapor üretebilirsiniz.")
+        return reports
+
+    def _selected_report(self):
+        sel = self.report_tree.selection()
+        if not sel:
+            messagebox.showinfo("Raporlar", "Listeden bir rapor seçin.")
+            return None
+        return self.report_list[int(sel[0])]
+
+    def open_report(self):
+        r = self._selected_report()
+        if not r:
+            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(r["path"])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(r["path"])])
+            else:
+                subprocess.Popen(["xdg-open", str(r["path"])])
+        except Exception as exc:
+            messagebox.showerror("Rapor açılamadı", str(exc))
+
+    def delete_report(self):
+        r = self._selected_report()
+        if not r:
+            return
+        if not messagebox.askyesno("Raporu sil", f"'{r['name']}' silinsin mi?"):
+            return
+        try:
+            r["path"].unlink()
+        except Exception as exc:
+            messagebox.showerror("Rapor silinemedi", str(exc))
+            return
+        self.refresh_reports()
+
+    def open_reports_folder(self):
+        """Raporların bulunduğu klasörü dosya yöneticisinde açar."""
+        from exporter import EXPORT_DIR
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(EXPORT_DIR)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(EXPORT_DIR)])
+            else:
+                subprocess.Popen(["xdg-open", str(EXPORT_DIR)])
+        except Exception as exc:
+            messagebox.showinfo("Rapor klasörü", f"Klasör açılamadı.\nYol: {EXPORT_DIR}\n{exc}")
+
+    def show_about(self):
+        messagebox.showinfo(
+            "Hakkında",
+            f"Bilgi Araştırma — Kaynaklı Yerel Arama\nSürüm {APP_VERSION}\n\n"
+            "PDF, Word, TXT, resim (OCR) ve web kaynaklarında arama;\n"
+            "isteğe bağlı yerel Ollama modeliyle konu notu ve akıllı arama.\n\n"
+            "Tüm veriler bilgisayarınızda kalır; internet gerekmez.")
 
     def get_query(self):
         """Çok satırlı girdi kutusundaki sorguyu döndürür."""
@@ -212,9 +391,45 @@ class App(tk.Tk):
 
     def refresh_documents(self):
         self.doc_tree.delete(*self.doc_tree.get_children())
+        active = self.settings.get("active_document_ids")
         for d in database.list_documents():
+            mark = "✓" if active is None or d["id"] in active else ""
             self.doc_tree.insert("", "end", iid=str(d["id"]), text=d["name"],
-                                 values=(d["file_type"], d["chunk_count"]))
+                                 values=(mark, d["file_type"], d["chunk_count"]))
+
+    def on_doc_click(self, event):
+        """'Aramada' sütununa tıklanınca kaynağı aramaya dâhil eder / çıkarır."""
+        if self.doc_tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.doc_tree.identify_column(event.x) != "#1":   # yalnızca "Aramada"
+            return
+        row = self.doc_tree.identify_row(event.y)
+        if not row:
+            return
+        self.toggle_document(int(row))
+        return "break"
+
+    def toggle_document(self, doc_id):
+        self.settings["active_document_ids"] = toggle_selection(
+            self.settings.get("active_document_ids"),
+            [d["id"] for d in database.list_documents()], doc_id)
+        self.save_settings_file()
+        self.refresh_documents()
+        self.status_var.set(f"Aramaya dâhil kaynak: {self.active_scope_text()}")
+
+    def set_all_documents(self, flag):
+        self.settings["active_document_ids"] = None if flag else []
+        self.save_settings_file()
+        self.refresh_documents()
+        self.status_var.set(f"Aramaya dâhil kaynak: {self.active_scope_text()}")
+
+    def active_document_ids(self):
+        """Aramada kullanılacak belge kimlikleri; None ise tümü."""
+        return resolve_scope(self.settings.get("active_document_ids"),
+                             [d["id"] for d in database.list_documents()])
+
+    def active_scope_text(self):
+        return scope_text(self.active_document_ids(), len(database.list_documents()))
 
     def delete_selected(self):
         sel = self.doc_tree.selection()
@@ -239,11 +454,20 @@ class App(tk.Tk):
         self.detail.delete("1.0", "end")
         self.all_terms_var_value, self.min_coverage_value = match_from_label(self.match_var.get())
         self.ignore_turkish_case_value = not self.turkish_sensitive_var.get()
+        # Kaynak seçimi: yalnızca işaretli kaynaklarda ara. Hiçbiri seçili
+        # değilse sessizce boş sonuç yerine kullanıcıyı uyar.
+        scope = self.active_document_ids()
+        if scope == []:
+            messagebox.showwarning("Kaynak seçimi",
+                                   "Hiçbir kaynak seçili değil. Sol listedeki 'Aramada' "
+                                   "sütunundan en az bir kaynak seçin.")
+            return
         def worker():
             try:
                 sid, results = search(q, all_terms=self.all_terms_var_value,
                                       min_coverage=self.min_coverage_value,
-                                      ignore_turkish_case=self.ignore_turkish_case_value)
+                                      ignore_turkish_case=self.ignore_turkish_case_value,
+                                      document_ids=scope)
                 self.after(0, lambda: self.finish_search(sid, results))
             except Exception as exc:
                 err = str(exc)
@@ -258,7 +482,8 @@ class App(tk.Tk):
             if len(preview) > 300: preview = preview[:300] + "…"
             self.result_tree.insert("", "end", iid=str(i),
                 values=(r["document_name"], r["location"], f'{r["score"]:.2f}', preview))
-        self.status_var.set(f"{len(results)} ilgili metin bölümü bulundu.")
+        self.status_var.set(f"{len(results)} ilgili metin bölümü bulundu "
+                            f"({self.active_scope_text()}).")
         self.refresh_history()
 
     def show_selected_result(self, _event=None):
@@ -346,7 +571,8 @@ class App(tk.Tk):
                 for probe in [q, " ".join(concepts)]:
                     if not probe.strip():
                         continue
-                    _, found = search(probe, ignore_turkish_case=ignore_case)
+                    _, found = search(probe, ignore_turkish_case=ignore_case,
+                                      document_ids=self.active_document_ids())
                     for r in found:
                         if r["chunk_id"] not in seen:
                             seen.add(r["chunk_id"])
@@ -471,7 +697,8 @@ class App(tk.Tk):
         safe = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in query).strip()[:60] or "Konu_Notu"
         path = exports / f"Konu_Notu_{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         path.write_text(f"Girdi: {query}\nAraştırma türü: {self.mode_var.get()}\nOluşturulma: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n{body}\n\n--- Aramada bulunan kaynaklar ---\n{sources}\n", encoding="utf-8")
-        self.status_var.set("Konu notu veritabanına ve exports klasörüne kaydedildi.")
+        self.status_var.set("Konu notu veritabanına ve Raporlar sekmesine kaydedildi.")
+        self.refresh_reports()
         messagebox.showinfo("Konu notu arşivlendi", f"Not kalıcı olarak kaydedildi:\n{path}")
 
     def export_report(self, fmt):
@@ -483,7 +710,9 @@ class App(tk.Tk):
             path = export_results(self.last_results, fmt=fmt, query=query,
                                   mode=self.mode_var.get(),
                                   ai_answer=self.detail.get("1.0", "end").strip() if self.current_ai_answer else "")
-            messagebox.showinfo("Rapor hazır", f"Tek dosyalı rapor oluşturuldu:\n{path}\n\nDosya, exports klasörüne kaydedildi.")
+            messagebox.showinfo("Rapor hazır", f"Tek dosyalı rapor oluşturuldu:\n{path}\n\n"
+                                                f"Dosya, Raporlar sekmesinden de açılabilir.")
+            self.refresh_reports()
         except Exception as exc:
             messagebox.showerror("Rapor oluşturulamadı", f"{fmt.upper()} dışa aktarma hatası:\n{exc}")
 
@@ -493,6 +722,7 @@ class App(tk.Tk):
             return
         path = export_csv(self.last_results)
         messagebox.showinfo("Dışa aktar", f"CSV dosyası oluşturuldu:\n{path}")
+        self.refresh_reports()
 
     def open_source(self):
         sel = self.result_tree.selection()
@@ -560,6 +790,7 @@ class App(tk.Tk):
         try:
             path = backup_project()
             messagebox.showinfo("Yedekleme", f"Yedek oluşturuldu:\n{path}")
+            self.refresh_reports()
         except Exception as exc:
             messagebox.showerror("Yedekleme hatası", str(exc))
 

@@ -71,6 +71,53 @@ def test_fts_and_fallback_agree(temp_db):
     assert via_fts
 
 
+def _doc_id(name):
+    return next(d["id"] for d in database.list_documents() if d["name"] == name)
+
+
+def test_document_ids_limits_scope_fts(temp_db):
+    """Kaynak seçimi: yalnızca seçilen belgede arama yapılmalı (FTS yolu)."""
+    _seed(temp_db)
+    hukuk, saglik = _doc_id("hukuk.txt"), _doc_id("saglik.txt")
+    _, scoped = search("hastalığı", document_ids=[saglik])
+    assert scoped and all(r["document_id"] == saglik for r in scoped)
+    _, wrong_scope = search("hastalığı", document_ids=[hukuk])
+    assert wrong_scope == []
+
+
+def test_document_ids_limits_scope_scan(temp_db):
+    """Kapsam süzgeci FTS kapalıyken de çalışmalı (tam tarama yolu)."""
+    _seed(temp_db)
+    hukuk = _doc_id("hukuk.txt")
+    _, scoped = search("tazminat", document_ids=[hukuk], use_fts=False)
+    assert scoped and all(r["document_id"] == hukuk for r in scoped)
+
+
+def test_document_ids_excludes_other_documents(temp_db):
+    """Seçilmeyen belgenin metni sonuçlarda hiç görünmemeli."""
+    _seed(temp_db)
+    hukuk = _doc_id("hukuk.txt")
+    _, scoped = search("şeker hastalığı", document_ids=[hukuk])
+    assert all("şeker" not in r["text"] for r in scoped)
+
+
+def test_document_ids_empty_means_all(temp_db):
+    """Boş liste 'hiçbir belge' değil, 'süzgeç yok' sayılır."""
+    _seed(temp_db)
+    _, none_given = search("tazminat", document_ids=None)
+    _, empty_given = search("tazminat", document_ids=[])
+    assert [r["chunk_id"] for r in none_given] == [r["chunk_id"] for r in empty_given]
+
+
+def test_document_ids_combines_with_coverage_mode(temp_db):
+    """Kapsam eşiği ile kaynak seçimi birlikte çalışmalı."""
+    _seed(temp_db)
+    hukuk = _doc_id("hukuk.txt")
+    _, results = search("kıdem tazminatı", all_terms=True, min_coverage=0.6,
+                        document_ids=[hukuk])
+    assert results and all(r["document_id"] == hukuk for r in results)
+
+
 def test_all_terms_requires_every_word(temp_db):
     _seed(temp_db)
     _, both = search("kıdem tazminatı", all_terms=True)

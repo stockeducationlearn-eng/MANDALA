@@ -1,6 +1,16 @@
 # BİLGİ ARAŞTIRMA — Tam Windows Paketi
 
+Sürüm 2.0 — değişiklik listesi için `DEGISIKLIKLER.md` dosyasına bakın.
+
 ## Özellikler
+- **Menü çubuğu:** Dosya, Ara, Kaynaklar, Rapor, Görünüm ve Yardım menüleriyle
+  tüm işlemler tek yerde; klavye kısayolları eşlenmiştir.
+- **Sekmeli arayüz:** `Arama` ve `Raporlar` sekmeleri.
+- **Oluşturulan raporlar:** `Raporlar` sekmesinde üretilen tüm raporlar (PDF,
+  Word, TXT, CSV, konu notu, yedek) tür, boyut ve tarih bilgisiyle listelenir;
+  tek tıkla açılır, silinebilir, klasör açılabilir.
+- **Kaynak seçimi:** Kaynak kütüphanesindeki `Aramada` sütunundan istediğiniz
+  kaynakları işaretleyip yalnızca onlarda arama yapabilirsiniz. Seçim kalıcıdır.
 - PDF, DOCX, TXT, PNG, JPG/JPEG, BMP, TIFF kaynaklarını arşive alır.
 - Kaynakları `documents/` klasörüne kopyalar; metinlerini SQLite'a kaydeder.
 - PDF sayfa numarası, Word paragraf/tablo konumu, TXT satır numarası ve görsel adıyla sonuç gösterir.
@@ -68,10 +78,46 @@ Model yerel bilgisayarda çalışır. Hız ve cevap kalitesi donanıma/model boy
 - `data/pdf_arastirma.db`: veritabanı (kaynaklar, arama geçmişi ve arşivlenmiş konu notları)
 - `data/settings.json`: uygulama ayarları
 - `documents/`: kaynak dosyalar
-- `exports/`: CSV ve yedekler
+- `exports/`: oluşturulan raporlar, konu notları ve yedekler
 - `logs/`: hata kayıtları
 
 Bu klasörü yedeklemek için uygulamadaki `Yedek oluştur` düğmesini kullanın. Veritabanı ile belge arşivi birlikte ZIP'e alınır.
+
+## Menüler ve sekmeler
+Uygulamanın üstünde bir menü çubuğu, altında iki sekme bulunur.
+
+| Menü | İşlemler |
+|---|---|
+| Dosya | Kaynak ekle, girdi kaynağından al, yedek oluştur, çıkış |
+| Ara | Ara, akıllı ara, sorguyu temizle, son aramalar |
+| Kaynaklar | Tüm kaynakları aramaya dâhil et, hiçbirini kullanma, kaynak sil, kaynak dosyayı aç |
+| Rapor | Raporlar sekmesini aç, PDF/Word/TXT/CSV raporu üret, konu notunu arşivle |
+| Görünüm | Sekmeler arasında geçiş, ayarlar |
+| Yardım | Hakkında (sürüm bilgisi) |
+
+Kısayollar: `Ctrl+O` kaynak ekle, `Ctrl+G` girdi kaynağı, `Ctrl+Enter` ara,
+`Ctrl+Shift+Enter` akıllı ara, `Ctrl+R` raporlar, `Ctrl+Q` çıkış.
+
+## Kaynak seçimi (birden fazla kaynakta arama)
+Sol taraftaki kaynak listesinde `Aramada` sütunu bulunur. Bir kaynağın önündeki
+`✓` işaretine tıklayarak onu aramaya dâhil edebilir ya da çıkarabilirsiniz.
+`Tümü` ve `Hiçbiri` düğmeleri toplu seçim yapar. Yalnızca işaretli kaynaklarda
+arama yapılır; seçim ayarlara kaydedilir. Hiçbir kaynak seçili değilken arama
+başlatılırsa uyarı verilir. Akıllı arama da aynı seçime uyar.
+
+## Oluşturulan raporlar
+Rapor ürettiğinizde (PDF, Word, TXT, CSV, konu notu, yedek) dosya `exports/`
+klasörüne yazılır ve `Raporlar` sekmesindeki liste otomatik güncellenir.
+
+| Düğme | Ne yapar |
+|---|---|
+| Aç | Seçili raporu varsayılan uygulamada açar (çift tıklama da açar) |
+| Sil | Seçili raporu siler |
+| Klasörü aç | `exports` klasörünü dosya yöneticisinde açar |
+| Yenile | Listeyi yeniden tarar |
+
+Liste en yeni rapor en üstte olacak şekilde sıralanır; her satırda tür, boyut,
+oluşturulma zamanı ve dosya adı görünür.
 
 ## Arama davranışı
 Arama, SQLite FTS5 tam metin indeksi (Türkçe katlanmış metin üzerinde) ve kelime örtüşmesine dayanır; gelişmiş vektör tabanlı anlamsal arama içermez. FTS5 bulunmayan ortamlarda otomatik olarak Python taramasına düşer. Türkçe ekler için önek eşleşmesi kullanılır (`tazminat` -> `tazminatı`). Soru metnini seçenekleriyle birlikte veya tek kavram olarak aratabilirsiniz.

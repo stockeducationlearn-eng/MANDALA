@@ -64,17 +64,21 @@ def _match_expression(terms, all_terms):
     return (" AND " if all_terms else " OR ").join(quoted)
 
 
-def _fts_candidates(con, terms, all_terms, candidate_limit):
-    return con.execute("""
+def _fts_candidates(con, terms, all_terms, candidate_limit, document_ids=None):
+    sql = """
         SELECT c.id AS chunk_id, c.document_id, c.location, c.text,
                d.name AS document_name, d.stored_path, d.source_url
         FROM chunks_fts
         JOIN chunks c ON c.id = chunks_fts.rowid
         JOIN documents d ON d.id = c.document_id
-        WHERE chunks_fts MATCH ?
-        ORDER BY bm25(chunks_fts)
-        LIMIT ?
-    """, (_match_expression(terms, all_terms), candidate_limit)).fetchall()
+        WHERE chunks_fts MATCH ?"""
+    params = [_match_expression(terms, all_terms)]
+    if document_ids:
+        sql += f" AND c.document_id IN ({','.join('?' * len(document_ids))})"
+        params.extend(document_ids)
+    sql += " ORDER BY bm25(chunks_fts) LIMIT ?"
+    params.append(candidate_limit)
+    return con.execute(sql, params).fetchall()
 
 
 def _chunk_present(text, terms, ignore_turkish_case):
@@ -119,12 +123,16 @@ def _filter_candidates(candidates, terms, threshold, ignore_turkish_case):
             and _chunk_present(r["text"], terms, ignore_turkish_case)]
 
 
-def _scan_candidates(con):
-    return con.execute("""
+def _scan_candidates(con, document_ids=None):
+    sql = """
         SELECT c.id AS chunk_id, c.document_id, c.location, c.text,
                d.name AS document_name, d.stored_path, d.source_url
-        FROM chunks c JOIN documents d ON d.id=c.document_id
-    """).fetchall()
+        FROM chunks c JOIN documents d ON d.id=c.document_id"""
+    params = []
+    if document_ids:
+        sql += f" WHERE c.document_id IN ({','.join('?' * len(document_ids))})"
+        params = list(document_ids)
+    return con.execute(sql, params).fetchall()
 
 
 def _score(query, text, terms, ignore_turkish_case, doc_coverage=0.0):
@@ -167,7 +175,7 @@ def label_from_settings(all_terms, min_coverage):
 
 
 def search(query, limit=150, all_terms=False, ignore_turkish_case=True, use_fts=True,
-           min_coverage=0.6, drop_stopwords=True):
+           min_coverage=0.6, drop_stopwords=True, document_ids=None):
     """Kaynak parçalarını sorguyla ilgi sırasına göre döndürür.
 
     all_terms=False: terimlerden en az biri geçen parçalar (OR) — kapsam eşiği
@@ -175,11 +183,13 @@ def search(query, limit=150, all_terms=False, ignore_turkish_case=True, use_fts=
     all_terms=True:  terimlerin en az `min_coverage` oranını içeren parçalar.
                      1.0 -> hepsi birebir (eski "tüm kelimeler" davranışı).
     drop_stopwords:  durdurma kelimelerini ("soru", "için", "her"...) eler.
+    document_ids:    yalnızca bu belgelerde ara (kaynak seçimi); boş/None ise tümü.
     """
     terms = content_terms(query, ignore_turkish_case) if drop_stopwords \
         else list(dict.fromkeys(tokens(query, ignore_turkish_case)))
     if not terms:
         return None, []
+    document_ids = list(document_ids) if document_ids else None
     threshold = (1.0 if min_coverage is None else min_coverage) if all_terms else 0.0
     # FTS5 yalnızca önek eşleştirmesi yapar; "feshettiğinde" ile "feshederse"
     # gibi ortak kökleri bulamaz. Bu yüzden kapsam süzgeci gerektiğinde tam
@@ -193,9 +203,9 @@ def search(query, limit=150, all_terms=False, ignore_turkish_case=True, use_fts=
             # FTS indeksi katlanmış metin üzerinde olduğu için sorgu da katlanır.
             fts_terms = list(dict.fromkeys(content_terms(query, True))) if drop_stopwords \
                 else list(dict.fromkeys(tokens(query, True)))
-            candidates = _fts_candidates(con, fts_terms, False, candidate_limit)
+            candidates = _fts_candidates(con, fts_terms, False, candidate_limit, document_ids)
         else:
-            candidates = _scan_candidates(con)
+            candidates = _scan_candidates(con, document_ids)
         candidates = _filter_candidates(candidates, terms, threshold, ignore_turkish_case)
         coverages = _document_coverages(candidates, terms, ignore_turkish_case)
         scored = sorted(

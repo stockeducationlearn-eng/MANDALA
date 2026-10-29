@@ -26,7 +26,8 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - `search_engine.py`: FTS5 + geri dönüş taraması, kapsam süzgeci, puanlama.
 - `text_sources.py`: dökümandan paragraf listeleme, resim/ekran OCR, web sayfası metni.
 - `ai_helper.py`: Ollama prompt/istek, sorgu genişletme ve anlamsal sıralama.
-- `exporter.py`: TXT/DOCX/PDF/CSV rapor + ZIP yedek.
+- `exporter.py`: TXT/DOCX/PDF/CSV rapor + ZIP yedek; `list_reports()` ile rapor listeleme.
+- `scope.py`: kaynak seçiminin (arama kapsamı) saf mantığı; Tk'sız test edilir.
 
 ## Kritik kurallar
 - **Bağlantı yönetimi:** Asla çıplak `with connect() as con:` kullanmayın; bu yalnızca
@@ -86,6 +87,19 @@ python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 - **Web kaynakları:** `documents.stored_path` yerel `.txt` kopyasını tutar; kaynak
   adresi `documents.source_url` sütunundadır. Yolu dosya varsayarak kullanan her kod
   `source_url` durumunu ele almalı (bkz. `open_source`).
+- **Kaynak seçimi:** `search(..., document_ids=[...])` süzgeci hem FTS hem tam tarama
+  yolunda uygulanır. Kapsam kararı `scope.resolve_scope` ile verilir: `None` = tümü,
+  boş liste = hiçbiri (kullanıcı uyarılır), liste = yalnızca o belgeler. Seçili
+  belgelerin tümü silinirse `resolve_scope` `None` döndürür, böylece arama çıkmaz
+  sokakta kalmaz. Bu mantığı app.py'ye gömmeden `scope.py` içinde tutun.
+- **Arayüz kablolaması:** Menü, sekme ve tablo sütunlarını değiştirdiğinizde
+  `tests/test_app_ui.py` içindeki sahte Tk katmanını da güncelleyin; bu testler
+  penceresiz ortamda kurulumu doğrular.
+- **Rapor listesi:** `exporter.list_reports()` dosya sistemini tek kaynak kabul eder,
+  ayrıca veritabanı kaydı tutmaz. `EXPORT_DIR` monkeypatch ile değiştirilebilir.
+- **Sürüm:** `app.py` içindeki `APP_VERSION` sabiti pencere başlığında, üst şeritte ve
+  Hakkında penceresinde kullanılır; sürüm artırırken burayı ve `DEGISIKLIKLER.md`
+  dosyasını güncelleyin.
 
 ## Notlar
 - `fonts/DejaVuSans.ttf` repoya gömülüdür; PDF raporlarında Türkçe karakterler
